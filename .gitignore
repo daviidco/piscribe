@@ -1,0 +1,9 @@
+.env
+.env.bak
+.venv/
+.pytest_cache/
+local_pending/
+transcriptions/
+log.txt
+__pycache__/
+*.pyc
