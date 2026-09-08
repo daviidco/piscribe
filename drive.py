@@ -52,16 +52,19 @@ def list_pending_files():
     return [f for f in files if Path(f).suffix.lower() in valid_exts]
 
 
-def download_file(filename, dest_dir):
-    """Copy a file from the Drive pending folder into a local directory.
+def download_file(filename, dest_dir, folder=None):
+    """Copy a file from a Drive folder into a local directory.
 
     Args:
-        filename: Name of the file inside the pending folder.
+        filename: Name of the file inside the folder.
         dest_dir: Local directory to copy the file into.
+        folder: Drive folder to copy from; defaults to the pending folder.
+            Pass ``PROCESSED_FOLDER`` to re-fetch an already-processed file.
     """
+    folder = folder or PENDING_FOLDER
     run([
         "rclone", "copy",
-        f"{RCLONE_REMOTE}:{PENDING_FOLDER}/{filename}",
+        f"{RCLONE_REMOTE}:{folder}/{filename}",
         str(dest_dir),
     ])
 

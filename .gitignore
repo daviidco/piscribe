@@ -4,6 +4,12 @@
 .pytest_cache/
 local_pending/
 transcriptions/
+runs/
 log.txt
+piscribe.db
+piscribe.db-wal
+piscribe.db-shm
+piscribe.lock
+piscribe.paused
 __pycache__/
 *.pyc

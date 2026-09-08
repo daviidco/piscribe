@@ -1,0 +1,24 @@
+# piscribe Telegram control bot — install as a user service:
+#   mkdir -p ~/.config/systemd/user
+#   cp systemd/piscribe-bot.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now piscribe-bot
+#   loginctl enable-linger "$USER"   # so it runs without an active login session
+#
+# Assumes the repo is at ~/piscribe with its virtualenv at ~/piscribe/.venv.
+
+[Unit]
+Description=piscribe Telegram control bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/piscribe
+ExecStart=%h/piscribe/.venv/bin/python %h/piscribe/bot.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

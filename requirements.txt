@@ -2,3 +2,4 @@
 # To upgrade: bump a version here, then `.venv/bin/pip install -r requirements.txt`.
 python-dotenv==1.2.3
 ollama==0.6.2
+python-telegram-bot[job-queue]==22.8

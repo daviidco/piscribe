@@ -22,16 +22,16 @@ env_lookup() {
     sed -n "s/^${key}=//p" "$file" | head -n1
 }
 
-# --- Step 1/5: update the code ------------------------------------------------
-echo "==> Step 1/5: updating the repository"
+# --- Step 1/6: update the code ------------------------------------------------
+echo "==> Step 1/6: updating the repository"
 if [ -d "$REPO_DIR/.git" ]; then
     git -C "$REPO_DIR" pull --ff-only || echo "    skipped: could not fast-forward"
 else
     echo "    skipped: not a git checkout"
 fi
 
-# --- Step 2/5: create the virtualenv ----------------------------------------
-echo "==> Step 2/5: creating the virtualenv at $VENV_DIR"
+# --- Step 2/6: create the virtualenv ----------------------------------------
+echo "==> Step 2/6: creating the virtualenv at $VENV_DIR"
 if ! python3 -m venv --help >/dev/null 2>&1; then
     echo "    python3-venv is missing. Install it with: sudo apt install python3-venv" >&2
     exit 1
@@ -39,16 +39,16 @@ fi
 python3 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/pip" install --upgrade --quiet pip
 
-# --- Step 3/5: install Python dependencies ---------------------------------
-echo "==> Step 3/5: installing Python dependencies"
+# --- Step 3/6: install Python dependencies ---------------------------------
+echo "==> Step 3/6: installing Python dependencies"
 "$VENV_DIR/bin/pip" install --quiet -r "$REPO_DIR/requirements.txt"
 
-# --- Step 4/5: create runtime directories ---------------------------------
-echo "==> Step 4/5: creating runtime directories under $WHISPER_DIR"
-mkdir -p "$WHISPER_DIR/local_pending" "$WHISPER_DIR/transcriptions"
+# --- Step 4/6: create runtime directories ---------------------------------
+echo "==> Step 4/6: creating runtime directories under $WHISPER_DIR"
+mkdir -p "$WHISPER_DIR/local_pending" "$WHISPER_DIR/transcriptions" "$WHISPER_DIR/runs"
 
-# --- Step 5/5: configure .env --------------------------------------------------
-echo "==> Step 5/5: configuring $ENV_FILE"
+# --- Step 5/6: configure .env --------------------------------------------------
+echo "==> Step 5/6: configuring $ENV_FILE"
 if [ -f "$ENV_FILE" ]; then
     cp "$ENV_FILE" "$ENV_FILE.bak"
     echo "    existing .env backed up to $ENV_FILE.bak"
@@ -96,7 +96,19 @@ done
 mv "$tmp_env" "$ENV_FILE"
 trap - EXIT
 
+# --- Step 6/6: schedule the cron job ----------------------------------------
+echo "==> Step 6/6: scheduling the cron job (Mon-Fri, 10:00-16:00, every 2h)"
+cron_line="0 10-17/2 * * 1-5 cd $REPO_DIR && $VENV_DIR/bin/python pipeline.py >> $WHISPER_DIR/cron.log 2>&1 # piscribe"
+if command -v crontab >/dev/null 2>&1; then
+    { crontab -l 2>/dev/null | grep -Fv '# piscribe' || true; echo "$cron_line"; } | crontab -
+    echo "    installed: $cron_line"
+else
+    echo "    crontab not found; add this line manually (crontab -e):" >&2
+    echo "    $cron_line" >&2
+fi
+
 echo
 echo "Done. Configuration written to $ENV_FILE"
-echo "Run a single pass with:"
-echo "  cd $REPO_DIR && $VENV_DIR/bin/python pipeline.py"
+echo
+echo "Run a single pass now:      cd $REPO_DIR && $VENV_DIR/bin/python pipeline.py"
+echo "Enable the Telegram bot:    see systemd/piscribe-bot.service (user service)"

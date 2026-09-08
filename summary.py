@@ -28,4 +28,5 @@ Texto:
 
 Resumen en español:"""
     response = ollama.generate(model=QWEN_MODEL, prompt=prompt)
-    return response["response"].strip()
+    # pylint mis-infers ollama.generate's return type; the mapping access is fine.
+    return response["response"].strip()  # pylint: disable=no-member

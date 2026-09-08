@@ -1,0 +1,248 @@
+"""Tests for the Telegram bot command handlers.
+
+Only the parts that do not need a real ``python-telegram-bot`` runtime: the sync
+helpers and the authorization gate, driven with hand-rolled fake updates.
+"""
+
+# Tests reach into the handlers module's own helpers, and use small fake classes.
+# pylint: disable=protected-access,too-few-public-methods
+
+import asyncio
+from types import SimpleNamespace
+
+import config
+import handlers
+import store
+
+
+class _Msg:
+    """Fake ``update.message`` that records replies instead of sending them."""
+
+    def __init__(self):
+        self.texts = []
+        self.documents = []
+
+    async def reply_text(self, text, **_kw):
+        """Record a text reply."""
+        self.texts.append(text)
+
+    async def reply_document(self, _doc, filename=None, caption=None, **_kw):
+        """Record a document reply (filename + caption only)."""
+        self.documents.append((filename, caption))
+
+
+def _update(user_id):
+    """Build a fake ``(update, message)`` pair for ``user_id``."""
+    msg = _Msg()
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=user_id, username="tester"),
+        effective_chat=SimpleNamespace(id=user_id),
+        effective_message=msg,
+        message=msg,
+    )
+    return update, msg
+
+
+def _ctx(args=None):
+    """Build a fake handler context."""
+    return SimpleNamespace(args=args or [], bot_data={}, bot=None, error=None)
+
+
+def test_redact_blanks_the_token():
+    """redact replaces the bot token and tolerates None."""
+    assert handlers.redact(f"leaked {config.TG_TOKEN} here") == "leaked *** here"
+    assert handlers.redact(None) == ""
+
+
+def test_authorized_ignores_unknown_ids():
+    """A caller outside TG_CHAT_IDS gets no reply at all."""
+    upd, msg = _update(999999)  # not in the "1,2" allowlist
+    asyncio.run(handlers.status(upd, _ctx()))
+    assert not msg.texts
+
+
+def test_authorized_allows_listed_ids():
+    """A caller in TG_CHAT_IDS gets a /status reply."""
+    store.init_db()
+    upd, msg = _update(int(config.TG_CHAT_IDS[0]))
+    asyncio.run(handlers.status(upd, _ctx()))
+    assert msg.texts and "run en curso" in msg.texts[0]
+
+
+def test_recap_returns_the_stored_summary():
+    """/recap with no args sends the most recent file's summary."""
+    store.init_db()
+    run_id = store.start_run("cron")
+    store.record_file(run_id, "reunion.mp4", "video", "ok", summary="puntos clave: X")
+    store.finish_run(run_id, "ok", 1, 1)
+
+    upd, msg = _update(int(config.TG_CHAT_IDS[0]))
+    asyncio.run(handlers.recap(upd, _ctx()))
+
+    assert any("puntos clave: X" in t for t in msg.texts)
+
+
+def test_resolve_file_by_index_and_name():
+    """resolve_file maps None/digit/name to the right file rows."""
+    store.init_db()
+    run_id = store.start_run("cron")
+    store.record_file(run_id, "one.txt", "text", "ok", summary="1")
+    store.record_file(run_id, "two.txt", "text", "ok", summary="2")
+
+    assert handlers.resolve_file(None)["filename"] == "two.txt"
+    assert handlers.resolve_file("2")["filename"] == "one.txt"
+    assert handlers.resolve_file("one.txt")["summary"] == "1"
+    assert handlers.resolve_file("missing.txt") is None
+
+
+class _FakePopen:
+    """Records the argv/env of a spawned process; wait() is a no-op."""
+
+    last = None
+
+    def __init__(self, argv, **kw):
+        self.argv = argv
+        self.env = kw.get("env")
+        self.returncode = 0
+        _FakePopen.last = self
+
+    def wait(self):
+        """Pretend the process finished immediately."""
+        return 0
+
+
+def _uid():
+    return int(config.TG_CHAT_IDS[0])
+
+
+def test_history_lists_recent_runs():
+    """/history renders one line per run."""
+    store.init_db()
+    rid = store.start_run("cron")
+    store.finish_run(rid, "ok", 2, 2)
+
+    upd, msg = _update(_uid())
+    asyncio.run(handlers.history(upd, _ctx()))
+
+    assert msg.texts and f"#{rid}" in msg.texts[0] and "2/2" in msg.texts[0]
+
+
+def test_logs_sends_the_run_log_as_a_document(tmp_path):
+    """/logs attaches the run's log file."""
+    store.init_db()
+    logf = tmp_path / "run-x.log"
+    logf.write_text("[t] Run 1 started\n[t] Done\n", encoding="utf-8")
+    rid = store.start_run("cron", log_path=str(logf))
+    store.finish_run(rid, "ok", 1, 1)
+
+    upd, msg = _update(_uid())
+    asyncio.run(handlers.logs(upd, _ctx()))
+
+    assert msg.documents and msg.documents[0][0] == "run-x.log"
+
+
+def test_transcript_sends_the_archived_file(tmp_path):
+    """/transcript attaches the stored transcript."""
+    store.init_db()
+    tf = tmp_path / "nota.txt"
+    tf.write_text("contenido", encoding="utf-8")
+    rid = store.start_run("cron")
+    store.record_file(rid, "nota.txt", "text", "ok", transcript_path=str(tf), summary="s")
+
+    upd, msg = _update(_uid())
+    asyncio.run(handlers.transcript(upd, _ctx()))
+
+    assert msg.documents and msg.documents[0][0] == "nota.txt"
+
+
+def test_run_spawns_pipeline_with_manual_env(monkeypatch):
+    """/run launches pipeline.py with PISCRIBE_TRIGGER=manual and the caller id."""
+    store.init_db()
+    monkeypatch.setattr(handlers.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(handlers, "current_run_pid", lambda: None)
+
+    upd, msg = _update(_uid())
+    asyncio.run(handlers.run(upd, _ctx(["reunion.mp4"])))
+
+    env = _FakePopen.last.env
+    assert env["PISCRIBE_TRIGGER"] == "manual"
+    assert env["PISCRIBE_BY"] == str(_uid())
+    assert env["PISCRIBE_ONLY"] == "reunion.mp4"
+    assert any("ejecutando" in t for t in msg.texts)
+
+
+def test_retry_resolves_a_filename_and_sets_mode(monkeypatch):
+    """/retry with no arg targets the latest file and sets PISCRIBE_MODE=retry."""
+    store.init_db()
+    rid = store.start_run("cron")
+    store.record_file(rid, "latest.mp4", "video", "error", error="x")
+    monkeypatch.setattr(handlers.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(handlers, "current_run_pid", lambda: None)
+
+    upd, _msg = _update(_uid())
+    asyncio.run(handlers.retry(upd, _ctx()))
+
+    env = _FakePopen.last.env
+    assert env["PISCRIBE_MODE"] == "retry"
+    assert env["PISCRIBE_ONLY"] == "latest.mp4"
+
+
+def test_run_is_refused_while_a_run_holds_the_lock(monkeypatch):
+    """/run does not spawn a second pipeline while one is in progress."""
+    _FakePopen.last = None
+    monkeypatch.setattr(handlers.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(handlers, "current_run_pid", lambda: 4242)
+    monkeypatch.setattr(handlers, "_pid_alive", lambda pid: True)
+
+    upd, msg = _update(_uid())
+    asyncio.run(handlers.run(upd, _ctx()))
+
+    assert _FakePopen.last is None
+    assert any("run en curso" in t for t in msg.texts)
+
+
+def test_pause_and_resume_toggle_the_flag():
+    """/pause creates the flag, /resume removes it."""
+    upd, _msg = _update(_uid())
+    asyncio.run(handlers.pause(upd, _ctx()))
+    assert config.PAUSE_FLAG.exists()
+    asyncio.run(handlers.resume(upd, _ctx()))
+    assert not config.PAUSE_FLAG.exists()
+
+
+def test_cancel_with_no_run_in_progress():
+    """/cancel says so when nothing is running."""
+    upd, msg = _update(_uid())
+    asyncio.run(handlers.cancel(upd, _ctx()))
+    assert msg.texts == ["no hay run en curso."]
+
+
+def test_find_reports_matches():
+    """/find searches summaries and filenames."""
+    store.init_db()
+    rid = store.start_run("cron")
+    store.record_file(rid, "abril.mp4", "video", "ok", summary="acuerdo clave")
+
+    upd, msg = _update(_uid())
+    asyncio.run(handlers.find(upd, _ctx(["acuerdo"])))
+    assert any("abril.mp4" in t for t in msg.texts)
+
+
+def test_deadman_recovery_notice():
+    """deadman_check sends a recovery message once the streak is broken."""
+    store.init_db()
+    rid = store.start_run("cron")
+    store.finish_run(rid, "ok", 1, 1)
+
+    sent = []
+
+    class _Bot:
+        async def send_message(self, _chat_id, text):
+            """Record a broadcast message."""
+            sent.append(text)
+
+    ctx = SimpleNamespace(bot=_Bot(), bot_data={"deadman_alerted": True})
+    asyncio.run(handlers.deadman_check(ctx))
+
+    assert any("recuperado" in t for t in sent)
+    assert ctx.bot_data["deadman_alerted"] is False

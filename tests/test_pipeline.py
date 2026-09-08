@@ -5,25 +5,35 @@ tool (rclone, ffmpeg, whisper, Ollama, curl) is stubbed, so nothing here touches
 the network or any path outside the test sandbox.
 """
 
+# A test that receives a fixture by name necessarily shadows the fixture
+# function; that is the intended pytest pattern, not a mistake.
+# pylint: disable=redefined-outer-name
+
+from types import SimpleNamespace
+
 import pytest
 
 import drive
 import pipeline
-import telegram
+import store
+import telegram_api
 import video
+from runlock import run_lock
 
 
 # ---------------------------------------------------------------------------
-# telegram._split_message
+# telegram_api.split_message
 # ---------------------------------------------------------------------------
 
 def test_split_message_short_text_is_one_part():
-    assert list(telegram._split_message("hola")) == ["hola"]
+    """Text under the limit is returned unchanged as a single part."""
+    assert list(telegram_api.split_message("hola")) == ["hola"]
 
 
 def test_split_message_respects_limit_and_keeps_content():
+    """A long, newline-rich message splits into within-limit parts, losing nothing."""
     text = "linea de prueba\n" * 800  # ~12.8k chars, newline every ~16
-    parts = list(telegram._split_message(text, limit=4000))
+    parts = list(telegram_api.split_message(text, limit=4000))
 
     assert len(parts) > 1
     assert all(len(p) <= 4000 for p in parts)
@@ -31,8 +41,9 @@ def test_split_message_respects_limit_and_keeps_content():
 
 
 def test_split_message_hard_cuts_a_line_with_no_newline():
+    """With no newline to break on, the splitter falls back to hard character cuts."""
     text = "x" * 9000
-    parts = list(telegram._split_message(text, limit=4000))
+    parts = list(telegram_api.split_message(text, limit=4000))
 
     assert [len(p) for p in parts] == [4000, 4000, 1000]
     assert "".join(parts) == text
@@ -43,10 +54,9 @@ def test_split_message_hard_cuts_a_line_with_no_newline():
 # ---------------------------------------------------------------------------
 
 def test_list_pending_files_filters_by_extension(monkeypatch):
-    class FakeResult:
-        stdout = "meeting.mp4\nnotes.txt\nreadme.md\nphoto.png\nsubdir/\n\n"
-
-    monkeypatch.setattr(drive, "run", lambda cmd: FakeResult())
+    """Only video/text extensions pass; images and sub-directories are dropped."""
+    listing = "meeting.mp4\nnotes.txt\nreadme.md\nphoto.png\nsubdir/\n\n"
+    monkeypatch.setattr(drive, "run", lambda cmd: SimpleNamespace(stdout=listing))
 
     assert drive.list_pending_files() == ["meeting.mp4", "notes.txt", "readme.md"]
 
@@ -67,22 +77,33 @@ def stub_pipeline(monkeypatch):
 
 
 def test_process_file_text_note(work_dirs, stub_pipeline):
+    """A .txt note is summarised and archived, sent once, local copy removed."""
     note = work_dirs.LOCAL_DIR / "nota.txt"
     note.write_text("acuerdos de la reunion", encoding="utf-8")
 
-    pipeline.process_file("nota.txt")
+    result = pipeline.process_file("nota.txt")
 
     assert len(stub_pipeline) == 1
     assert "nota.txt" in stub_pipeline[0]
     assert "SUMMARY<<acuerdos de la reunion>>" in stub_pipeline[0]
     assert not note.exists()  # local copy cleaned up
 
+    assert result.status == "ok"
+    assert result.kind == "text"
+    assert result.summary == "SUMMARY<<acuerdos de la reunion>>"
+    archived = work_dirs.TRANSCRIPTIONS_DIR / "nota.txt"
+    assert archived.read_text(encoding="utf-8") == "acuerdos de la reunion"
+    assert result.transcript_path == str(archived)
 
-def test_process_file_cleans_local_copy_when_a_later_step_fails(work_dirs, stub_pipeline, monkeypatch):
+
+@pytest.mark.usefixtures("stub_pipeline")
+def test_process_file_cleans_local_copy_when_a_later_step_fails(work_dirs, monkeypatch):
+    """The finally block deletes the local copy even when summarising raises."""
     note = work_dirs.LOCAL_DIR / "boom.txt"
     note.write_text("contenido", encoding="utf-8")
 
     def explode(_text):
+        """Fake generate_summary that always fails."""
         raise RuntimeError("ollama down")
 
     monkeypatch.setattr(pipeline, "generate_summary", explode)
@@ -98,9 +119,11 @@ def test_process_file_cleans_local_copy_when_a_later_step_fails(work_dirs, stub_
 # ---------------------------------------------------------------------------
 
 def test_process_video_reads_transcript_and_removes_wav(work_dirs, monkeypatch):
+    """process_video returns whisper's transcript and cleans up the temp .wav."""
     monkeypatch.setattr(video, "extract_audio", lambda src, dst: None)
 
     def fake_transcribe(_audio_path, output_base):
+        """Fake whisper run that writes the expected ``<base>.txt``."""
         output_base.with_name(f"{output_base.name}.txt").write_text(
             "transcripcion simulada", encoding="utf-8"
         )
@@ -115,6 +138,7 @@ def test_process_video_reads_transcript_and_removes_wav(work_dirs, monkeypatch):
 
 
 def test_process_video_raises_when_whisper_writes_nothing(work_dirs, monkeypatch):
+    """A clean whisper exit that produces no file surfaces as a RuntimeError."""
     monkeypatch.setattr(video, "extract_audio", lambda src, dst: None)
     monkeypatch.setattr(video, "transcribe", lambda a, b: None)  # writes no .txt
 
@@ -129,14 +153,18 @@ def test_process_video_raises_when_whisper_writes_nothing(work_dirs, monkeypatch
 # pipeline.main
 # ---------------------------------------------------------------------------
 
-def test_main_continues_after_one_file_fails(work_dirs, monkeypatch, read_log):
+@pytest.mark.usefixtures("work_dirs")
+def test_main_continues_after_one_file_fails(monkeypatch, read_log):
+    """One failing file is logged, the batch continues, and the run is recorded."""
     monkeypatch.setattr(pipeline, "list_pending_files", lambda: ["bad.txt", "good.txt"])
     handled = []
 
     def fake_process(name):
+        """Fake process_file that fails only for bad.txt."""
         handled.append(name)
         if name == "bad.txt":
             raise RuntimeError("kaboom")
+        return pipeline.FileResult(filename=name, kind="text", status="ok")
 
     monkeypatch.setattr(pipeline, "process_file", fake_process)
 
@@ -145,9 +173,18 @@ def test_main_continues_after_one_file_fails(work_dirs, monkeypatch, read_log):
     assert handled == ["bad.txt", "good.txt"]
     assert "ERROR processing bad.txt: kaboom" in read_log()
 
+    last = store.last_run()
+    assert last["trigger"] == "cron"
+    assert last["status"] == "partial"
+    assert (last["files_ok"], last["files_total"]) == (1, 2)
 
-def test_main_logs_listing_failure_without_traceback(work_dirs, monkeypatch, read_log):
+
+@pytest.mark.usefixtures("work_dirs")
+def test_main_logs_listing_failure_without_traceback(monkeypatch, read_log):
+    """A failure while listing the pending folder is logged, not raised."""
+
     def boom():
+        """Fake list_pending_files that fails as if rclone were missing."""
         raise FileNotFoundError("[Errno 2] No such file or directory: 'rclone'")
 
     monkeypatch.setattr(pipeline, "list_pending_files", boom)
@@ -155,3 +192,111 @@ def test_main_logs_listing_failure_without_traceback(work_dirs, monkeypatch, rea
     pipeline.main()  # must not raise
 
     assert "ERROR listing pending files" in read_log()
+    assert store.last_run()["status"] == "error"
+
+
+@pytest.mark.usefixtures("work_dirs")
+def test_main_skips_when_run_lock_is_held(monkeypatch, read_log):
+    """A second cron invocation while a run holds the lock exits without working."""
+    called = []
+    monkeypatch.setattr(pipeline, "list_pending_files", lambda: called.append(1) or [])
+
+    with run_lock():                # simulate a run already in progress
+        pipeline.main()
+
+    assert not called               # run_pipeline never got to list files
+    assert store.last_run() is None
+    assert "Skipping cron run" in read_log()
+
+
+# ---------------------------------------------------------------------------
+# run_pipeline(only=...) / manual trigger / retry / resummarize / cancel
+# ---------------------------------------------------------------------------
+
+@pytest.mark.usefixtures("work_dirs")
+def test_run_pipeline_only_filters_to_one_pending_file(monkeypatch):
+    """`only` restricts the pass to a single pending filename."""
+    monkeypatch.setattr(pipeline, "list_pending_files", lambda: ["a.txt", "b.txt"])
+    seen = []
+
+    def fake_process(name):
+        seen.append(name)
+        return pipeline.FileResult(filename=name, kind="text", status="ok")
+
+    monkeypatch.setattr(pipeline, "process_file", fake_process)
+
+    result = pipeline.run_pipeline("manual", requested_by="7", only="b.txt")
+
+    assert seen == ["b.txt"]
+    assert result.status == "ok"
+    assert store.last_run()["requested_by"] == "7"
+
+
+@pytest.mark.usefixtures("work_dirs")
+def test_main_reads_trigger_and_requested_by_from_env(monkeypatch):
+    """/run's PISCRIBE_* env vars land on the recorded run."""
+    monkeypatch.setenv("PISCRIBE_TRIGGER", "manual")
+    monkeypatch.setenv("PISCRIBE_BY", "42")
+    monkeypatch.setattr(pipeline, "list_pending_files", list)
+
+    pipeline.main()
+
+    last = store.last_run()
+    assert last["trigger"] == "manual"
+    assert last["requested_by"] == "42"
+
+
+@pytest.mark.usefixtures("work_dirs")
+def test_retry_file_reprocesses_from_processed(monkeypatch):
+    """retry_file runs process_file with source='processed' as its own run."""
+    calls = {}
+
+    def fake_process(name, *, source="pending"):
+        calls["name"] = name
+        calls["source"] = source
+        return pipeline.FileResult(filename=name, kind="video", status="ok", summary="s")
+
+    monkeypatch.setattr(pipeline, "process_file", fake_process)
+
+    result = pipeline.retry_file("clip.mp4", requested_by="9")
+
+    assert calls == {"name": "clip.mp4", "source": "processed"}
+    assert result.status == "ok"
+    row = store.last_run()
+    assert row["trigger"] == "manual" and row["files_ok"] == 1
+
+
+@pytest.mark.usefixtures("work_dirs")
+def test_resummarize_file_uses_the_stored_transcript(monkeypatch):
+    """resummarize_file re-runs only the summary over the archived transcript."""
+    transcript = pipeline.TRANSCRIPTIONS_DIR / "nota.txt"
+    transcript.write_text("texto original de la reunion", encoding="utf-8")
+    rid = store.start_run("cron")
+    store.record_file(rid, "nota.txt", "text", "ok", transcript_path=str(transcript))
+    store.finish_run(rid, "ok", 1, 1)
+
+    sent = []
+    monkeypatch.setattr(pipeline, "generate_summary", lambda text: f"RE<<{text}>>")
+    monkeypatch.setattr(pipeline, "send_telegram_message", sent.append)
+
+    result = pipeline.resummarize_file("nota.txt")
+
+    assert result.status == "ok"
+    assert sent and "RE<<texto original de la reunion>>" in sent[0]
+    assert store.nth_file(1)["summary"] == "RE<<texto original de la reunion>>"
+
+
+@pytest.mark.usefixtures("work_dirs")
+def test_run_pipeline_marks_cancelled_on_sigterm(monkeypatch):
+    """A KeyboardInterrupt mid-batch (SIGTERM) finishes the run as 'cancelled'."""
+    monkeypatch.setattr(pipeline, "list_pending_files", lambda: ["x.txt"])
+
+    def boom(_name):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(pipeline, "process_file", boom)
+
+    result = pipeline.run_pipeline("manual")
+
+    assert result.status == "cancelled"
+    assert store.last_run()["status"] == "cancelled"

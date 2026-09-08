@@ -1,9 +1,11 @@
 """Shared test setup.
 
-The module-level code here runs before any test module imports ``config``, so it
-points ``$HOME`` at a throwaway directory and fills in the environment variables
-``config.py`` requires. Every path the pipeline computes therefore lands inside
-the sandbox instead of the real ``~/whisper.cpp``.
+The environment bootstrap below runs before any test module imports ``config``:
+it points ``$HOME`` at a throwaway directory and fills in the variables
+``config.py`` requires. Every pipeline path — runtime dirs, the SQLite store, the
+run lock — therefore lands inside the sandbox instead of the real
+``~/whisper.cpp``. ``config`` is imported straight after that bootstrap, hence
+the deliberate non-top-level position.
 """
 
 import os
@@ -23,33 +25,44 @@ os.environ.setdefault("TG_TOKEN", "test-token")
 os.environ.setdefault("TG_CHAT_IDS", "1,2")
 (_SANDBOX / "whisper.cpp").mkdir(parents=True, exist_ok=True)
 
+import config  # noqa: E402  pylint: disable=wrong-import-position
 
-def pytest_unconfigure(config):
+
+def pytest_unconfigure():
     """Remove the sandbox once the whole test session is done."""
     shutil.rmtree(_SANDBOX, ignore_errors=True)
 
 
+@pytest.fixture(autouse=True)
+def clean_state():
+    """Wipe the store, run lock, pause flag and run logs before every test."""
+    for path in (config.DB_PATH, config.LOCK_PATH, config.PAUSE_FLAG,
+                 config.LOG_FILE, config.DB_PATH.with_suffix(".db-wal"),
+                 config.DB_PATH.with_suffix(".db-shm")):
+        Path(path).unlink(missing_ok=True)
+    shutil.rmtree(config.RUN_LOG_DIR, ignore_errors=True)
+    yield
+
+
 @pytest.fixture
 def work_dirs():
-    """Create ``LOCAL_DIR`` / ``TRANSCRIPTIONS_DIR`` for one test, wipe them after.
+    """Create the runtime dirs for one test, wipe them after.
 
     Yields the ``config`` module so tests can reach the sandbox paths.
     """
-    import config
-
-    for directory in (config.LOCAL_DIR, config.TRANSCRIPTIONS_DIR):
+    for directory in (config.LOCAL_DIR, config.TRANSCRIPTIONS_DIR, config.RUN_LOG_DIR):
         directory.mkdir(parents=True, exist_ok=True)
     yield config
-    for directory in (config.LOCAL_DIR, config.TRANSCRIPTIONS_DIR):
+    for directory in (config.LOCAL_DIR, config.TRANSCRIPTIONS_DIR, config.RUN_LOG_DIR):
         shutil.rmtree(directory, ignore_errors=True)
 
 
 @pytest.fixture
 def read_log():
-    """Return a callable that reads the current log file contents."""
-    import config
+    """Return a callable that reads the current shared log file contents."""
 
     def _read():
+        """Read the log file, returning an empty string if it does not exist yet."""
         try:
             return config.LOG_FILE.read_text(encoding="utf-8")
         except FileNotFoundError:

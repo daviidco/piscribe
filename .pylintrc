@@ -1,0 +1,9 @@
+[MAIN]
+# The modules live at the repo root and import each other as top-level modules
+# (matching how pipeline.py is run). Put the root on sys.path so pylint resolves
+# them the same way pytest does via `pythonpath = .` in pytest.ini.
+init-hook = 'import sys; sys.path.insert(0, ".")'
+
+[DESIGN]
+# store.record_file maps 1:1 to its table columns.
+max-args = 8
