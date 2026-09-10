@@ -40,7 +40,7 @@ Conservar todos los detalles relevantes de la conversación sin convertir el res
 12. Evita repetir el mismo contenido en varias secciones, salvo que sea necesario para relacionar un problema con su resolución o con un compromiso.
 
 ## Formato de salida
-Usa Markdown claro y profesional. Incluye únicamente las secciones que tengan contenido respaldado por la transcripción, siguiendo este orden preferente:
+Usa Markdown claro, profesional y español. Incluye únicamente las secciones que tengan contenido respaldado por la transcripción, siguiendo este orden preferente:
 
 # Resumen de la reunión o conversación
 
