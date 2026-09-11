@@ -61,5 +61,5 @@ def test_prompt_template_carries_the_transcript_and_the_spanish_instruction():
     """Sanity check: both backends share the same structured Spanish prompt."""
     prompt = summary._PROMPT_TEMPLATE.format(text="HOLA_MUNDO_UNICO")
     assert "HOLA_MUNDO_UNICO" in prompt
-    assert "Responde SIEMPRE en español" in prompt
-    assert "nunca inventes ni adivines nombres" in prompt
+    assert "Usa Markdown claro, profesional y español" in prompt
+    assert "No inventes información" in prompt

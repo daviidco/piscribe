@@ -12,36 +12,89 @@ from groq import Groq
 from config import GROQ_API_KEY, GROQ_MODEL, GROQ_TIMEOUT_SECONDS, QWEN_MODEL
 from utils import log
 
-_PROMPT_TEMPLATE = """Eres un asistente que resume transcripciones de reuniones de trabajo.
+# The prompt's wording/line lengths are content, not code — kept verbatim.
+# pylint: disable-next=line-too-long
+_PROMPT_TEMPLATE = """Analiza la transcripción completa que aparece al final de este mensaje y crea un resumen detallado, fiel y estructurado. No respondas sobre el proceso de análisis: entrega directamente el resumen final.
 
-Instrucciones:
-- Responde SIEMPRE en español, aunque la transcripción esté en otro idioma.
-- Sé claro y conciso. No agregues preámbulos, disculpas ni comentarios sobre el proceso.
-- Atribuye afirmaciones, propuestas y compromisos a quién los dijo, pero SOLO cuando
-  la transcripción lo permita identificar (por un nombre citado o por el contexto).
-  Si no se puede determinar, no lo atribuyas; nunca inventes ni adivines nombres.
-- No inventes decisiones, fechas, números de ticket ni ningún dato que no esté en el texto.
-- Si el texto no es una reunión o es demasiado breve para resumir, dilo en una frase.
+## Objetivo
+Conservar todos los detalles relevantes de la conversación sin convertir el resultado en una transcripción literal. Incluye los puntos clave tratados, decisiones, argumentos importantes, compromisos, problemas críticos y problemas resueltos. Cuando sea posible, indica qué persona mencionó cada punto.
 
-Devuelve exactamente estas secciones, en este orden (omite una sección si no aplica):
+## Instrucciones de análisis
+1. Lee y analiza toda la transcripción antes de redactar el resumen.
+2. No inventes información, nombres, responsabilidades, fechas, decisiones ni conclusiones.
+3. Diferencia claramente entre hechos afirmados, propuestas, dudas, opiniones, decisiones confirmadas y asuntos pendientes.
+4. Atribuye cada punto a la persona correspondiente únicamente cuando el nombre o la identidad del hablante estén disponibles o puedan inferirse con seguridad.
+5. Si un punto fue mencionado por varias personas, indícalo cuando sea relevante.
+6. Conserva fechas, cifras, nombres de proyectos, productos, clientes, sistemas, plazos, dependencias y cualquier otro dato concreto presente en la transcripción.
+7. Mantén el contexto necesario para que cada punto pueda entenderse sin consultar la transcripción original.
+8. Señala contradicciones, ambigüedades o información insuficiente sin intentar resolverlas por cuenta propia.
+9. No confundas una intención o sugerencia con un compromiso confirmado.
+10. Si una sección no está respaldada por la transcripción, omítela por completo. No escribas frases como «no se mencionó», «sin información» o similares.
+11. Si la transcripción contiene errores, interrupciones o frases incompletas, interpreta solo lo que pueda determinarse razonablemente y marca como incierto cualquier aspecto dudoso.
+12. Evita repetir el mismo contenido en varias secciones, salvo que sea necesario para relacionar un problema con su resolución o con un compromiso.
 
-Resumen: frases con lo esencial.
+## Formato de salida
+Usa Markdown claro, profesional y español. Incluye únicamente las secciones que tengan contenido respaldado por la transcripción, siguiendo este orden preferente:
 
-Puntos clave:
-- <punto> — (quién lo planteó, si consta)
+# Resumen de la reunión o conversación
 
-Decisiones:
-- <decisión> — (quién la impulsó o aprobó, si consta)
+## Síntesis ejecutiva
+Resume en pocos párrafos el propósito, los temas principales y el resultado general.
 
-Pendientes:
-- <acción> — responsable: <nombre o "sin asignar"> — fecha: <si consta>
+## Puntos clave tratados
+Presenta los temas importantes en viñetas. Para cada punto, indica el hablante cuando sea posible y conserva los detalles relevantes.
 
-Participantes: <nombres que aparezcan en la transcripción, o "no identificados">
+## Decisiones y conclusiones
+Incluye solo decisiones o conclusiones confirmadas. Indica quién las tomó o mencionó cuando sea posible.
 
-Transcripción:
+## Compromisos y acciones acordadas
+Para cada compromiso, especifica:
+- Acción
+- Responsable
+- Fecha límite o plazo
+- Dependencias o condiciones
+- Estado, si se conoce
+
+No completes ningún dato ausente con suposiciones.
+
+## Problemas críticos o riesgos
+Describe el problema, su impacto, las causas mencionadas, la persona que lo planteó —si se conoce— y el estado actual.
+
+## Problemas resueltos
+Indica qué problema se resolvió, cómo se resolvió, quién participó y cualquier condición o seguimiento pendiente.
+
+## Temas pendientes y próximos pasos
+Incluye asuntos abiertos, preguntas sin respuesta, decisiones pendientes y acciones futuras.
+
+## Discrepancias, dudas o información ambigua
+Incluye esta sección solo si la transcripción contiene contradicciones, afirmaciones dudosas o información que no permite llegar a una conclusión clara.
+
+## Detalles adicionales relevantes
+Incluye aquí información importante que no encaje adecuadamente en las secciones anteriores.
+
+## Reglas para la atribución de hablantes
+- Si aparecen nombres explícitos, utilízalos tal como figuran.
+- Si solo aparecen etiquetas como «Hablante 1» o «Participante A», conserva esas etiquetas.
+- Si una persona puede identificarse por contexto pero no con certeza, indica la atribución como «posiblemente [identidad]» o evita atribuirla.
+- Nunca atribuyas una afirmación a una persona basándote únicamente en una suposición.
+
+## Verificación final antes de responder
+Comprueba que:
+- Se ha considerado toda la transcripción.
+- No se han omitido detalles relevantes, fechas, cifras o condiciones.
+- Cada compromiso está diferenciado de una simple propuesta.
+- Los problemas críticos están separados de los problemas resueltos.
+- Las atribuciones de hablantes son prudentes y trazables.
+- No se ha añadido información que no esté en la transcripción.
+- Se han omitido las secciones sin contenido.
+- El resumen es detallado, pero no repite innecesariamente la transcripción.
+
+## Transcripción completa
+
+--- INICIO DE LA TRANSCRIPCIÓN ---
 {text}
-
-Resumen:"""
+--- FIN DE LA TRANSCRIPCIÓN ---
+"""
 
 
 def _summarize_local(prompt):
@@ -75,13 +128,14 @@ def _summarize_groq(prompt):
 
 
 def generate_summary(text):
-    """Summarize a transcript into a structured, concise Spanish summary.
+    """Summarize a transcript into a detailed, structured Spanish summary.
 
-    The same prompt is used for both backends: always answer in Spanish
-    regardless of the source language, return a fixed set of sections
-    (summary, key points, decisions, open items, participants), and attribute
-    statements to a speaker only when the transcript makes that identifiable —
-    never inventing names or facts.
+    The same prompt is used for both backends: analyze the full transcript and
+    produce a Markdown summary (executive synthesis, key points, decisions,
+    commitments with owner/deadline, risks, resolved issues, open items, and
+    discrepancies), attributing statements to a speaker only when the
+    transcript makes that identifiable, and never inventing names, dates, or
+    facts not present in the text.
 
     Args:
         text: The transcript (or note) to summarize; may be in any language.
