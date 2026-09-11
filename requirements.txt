@@ -3,3 +3,4 @@
 python-dotenv==1.2.3
 ollama==0.6.2
 python-telegram-bot[job-queue]==22.8
+groq==1.7.0

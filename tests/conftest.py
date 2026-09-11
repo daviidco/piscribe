@@ -23,6 +23,10 @@ os.environ.setdefault("PROCESSED_FOLDER", "processed")
 os.environ.setdefault("QWEN_MODEL", "test-qwen")
 os.environ.setdefault("TG_TOKEN", "test-token")
 os.environ.setdefault("TG_CHAT_IDS", "1,2")
+# Force-disabled by default: without this, config.py's load_dotenv() would pick
+# up the real GROQ_API_KEY from the repo's own .env (load_dotenv doesn't
+# override already-set vars, so setting it here — even to "" — wins first).
+os.environ["GROQ_API_KEY"] = ""
 (_SANDBOX / "whisper.cpp").mkdir(parents=True, exist_ok=True)
 
 import config  # noqa: E402  pylint: disable=wrong-import-position

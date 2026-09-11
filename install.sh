@@ -11,9 +11,13 @@ ENV_FILE="$REPO_DIR/.env"
 ENV_EXAMPLE="$REPO_DIR/.env.example"
 
 # Order of the variables written to .env.
-ENV_VARS="TG_TOKEN TG_CHAT_IDS RCLONE_REMOTE PENDING_FOLDER PROCESSED_FOLDER QWEN_MODEL"
+ENV_VARS="TG_TOKEN TG_CHAT_IDS RCLONE_REMOTE PENDING_FOLDER PROCESSED_FOLDER QWEN_MODEL GROQ_API_KEY"
 # Variables that have no sensible default and must be provided by the user.
 ENV_REQUIRED=" TG_TOKEN TG_CHAT_IDS "
+# Variables that may be left blank (blank = feature disabled, not "invalid").
+# Kept in ENV_VARS (not just documented) so a re-run of this script doesn't wipe
+# a value the user set by hand, since step 5 rewrites .env from ENV_VARS only.
+ENV_OPTIONAL=" GROQ_API_KEY "
 
 # Read the value of KEY from an env file (prints nothing if absent).
 env_lookup() {
@@ -55,18 +59,25 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 # Ask for one variable and store the resolved value in ENV_ANSWER.
-# Precedence for the pre-filled suggestion: current .env value, then .env.example
-# default (unless the variable is required), otherwise no suggestion.
-# Returns non-zero if no interactive input is available.
+# Precedence for the pre-filled suggestion: current .env value, then (for
+# required-or-defaulted variables) the .env.example default, otherwise no
+# suggestion. Variables in ENV_OPTIONAL accept a blank answer (feature stays
+# disabled); their .env.example placeholder is never offered as a default,
+# since it would look like a real value. Returns non-zero if no interactive
+# input is available.
 ENV_ANSWER=""
 ask_env_var() {
-    local key="$1" current default suggestion label
+    local key="$1" current default suggestion label optional=false
     current="$(env_lookup "$ENV_FILE" "$key")"
     default="$(env_lookup "$ENV_EXAMPLE" "$key")"
+    case "$ENV_OPTIONAL" in *" $key "*) optional=true ;; esac
 
     if [ -n "$current" ]; then
         suggestion="$current"
         label="  $key [Enter to keep current: $current]: "
+    elif [ "$optional" = true ]; then
+        suggestion=""
+        label="  $key (optional, Enter to leave disabled): "
     elif [ -n "$default" ] && [ "${ENV_REQUIRED#*" $key "}" = "$ENV_REQUIRED" ]; then
         suggestion="$default"
         label="  $key [Enter for default: $default]: "
@@ -82,7 +93,9 @@ ask_env_var() {
             return 1
         fi
         ENV_ANSWER="${ENV_ANSWER:-$suggestion}"
-        [ -n "$ENV_ANSWER" ] && return 0
+        if [ -n "$ENV_ANSWER" ] || [ "$optional" = true ]; then
+            return 0
+        fi
         echo "    a value is required, try again" >&2
     done
 }

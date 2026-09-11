@@ -46,5 +46,15 @@ PROCESSED_FOLDER = os.environ["PROCESSED_FOLDER"]
 TG_TOKEN = os.environ["TG_TOKEN"]
 TG_CHAT_IDS = [c.strip() for c in os.environ["TG_CHAT_IDS"].split(",") if c.strip()]
 
+# Optional cloud-first transcription/summary via Groq; empty key disables it and
+# every run falls back to the local whisper.cpp / Ollama path (see video.py,
+# summary.py). Not required at import time, unlike the variables above.
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "qwen/qwen3.8-27b")
+GROQ_WHISPER_MODEL = os.environ.get("GROQ_WHISPER_MODEL", "whisper-large-v3")
+GROQ_TIMEOUT_SECONDS = float(os.environ.get("GROQ_TIMEOUT_SECONDS", "20"))
+GROQ_AUDIO_TIMEOUT_SECONDS = float(os.environ.get("GROQ_AUDIO_TIMEOUT_SECONDS", "60"))
+GROQ_MAX_AUDIO_MB = float(os.environ.get("GROQ_MAX_AUDIO_MB", "24"))
+
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi"}
 TEXT_EXTENSIONS = {".txt", ".md"}

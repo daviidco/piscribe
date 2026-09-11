@@ -60,6 +60,8 @@ class FileResult:
     summary: str | None = None
     error: str | None = None
     duration_ms: int | None = None
+    transcribe_backend: str | None = None  # e.g. "Groq · whisper-large-v3"
+    summarize_backend: str | None = None  # e.g. "local · Ollama qwen3:1.7b"
 
 
 @dataclass
@@ -83,6 +85,15 @@ def _kind_of(filename):
     return "video" if Path(filename).suffix.lower() in VIDEO_EXTENSIONS else "text"
 
 
+def _signed_message(filename, summary, transcribe_backend, summarize_backend, label="Summary"):
+    """Build the outbound Telegram text, signed with the engine(s) that produced it."""
+    lines = [f"📋 {label}: {filename}", "", summary, ""]
+    if transcribe_backend:
+        lines.append(f"_transcripción: {transcribe_backend}_")
+    lines.append(f"_resumen: {summarize_backend}_")
+    return "\n".join(lines)
+
+
 def _new_run(trigger, requested_by):
     """Make the runtime dirs, open a run row, and return (id, log_path, result)."""
     LOCAL_DIR.mkdir(parents=True, exist_ok=True)
@@ -101,6 +112,8 @@ def _record(run_id, file_result):
         run_id, file_result.filename, file_result.kind, file_result.status,
         transcript_path=file_result.transcript_path, summary=file_result.summary,
         error=file_result.error, duration_ms=file_result.duration_ms,
+        transcribe_backend=file_result.transcribe_backend,
+        summarize_backend=file_result.summarize_backend,
     )
 
 
@@ -128,16 +141,18 @@ def process_file(filename, *, source="pending"):
     else:
         download_file(filename, LOCAL_DIR, folder=PROCESSED_FOLDER)
 
+    transcribe_backend = None
     try:
         if kind == "video":
-            text = process_video(filename, local_path)
+            text, transcribe_backend = process_video(filename, local_path)
         else:
             text = process_text(local_path)
             transcript.write_text(text, encoding="utf-8")
 
-        log("Generating summary with Qwen...")
-        summary = generate_summary(text)
-        send_telegram_message(f"📋 Summary: {filename}\n\n{summary}")
+        summary, summarize_backend = generate_summary(text)
+        send_telegram_message(
+            _signed_message(filename, summary, transcribe_backend, summarize_backend)
+        )
     finally:
         local_path.unlink(missing_ok=True)
 
@@ -149,6 +164,8 @@ def process_file(filename, *, source="pending"):
         transcript_path=str(transcript) if transcript.is_file() else None,
         summary=summary,
         duration_ms=int((time.monotonic() - started) * 1000),
+        transcribe_backend=transcribe_backend,
+        summarize_backend=summarize_backend,
     )
 
 
@@ -163,13 +180,16 @@ def _resummarize(filename):
         raise RuntimeError(f"transcript file missing: {path}")
 
     text = path.read_text(encoding="utf-8")
-    log("Re-generating summary with Qwen...")
-    summary = generate_summary(text)
-    send_telegram_message(f"📋 Summary (re): {filename}\n\n{summary}")
+    summary, summarize_backend = generate_summary(text)
+    transcribe_backend = row.get("transcribe_backend")
+    send_telegram_message(_signed_message(
+        filename, summary, transcribe_backend, summarize_backend, label="Summary (re)"
+    ))
     log(f"Done: {filename}")
     return FileResult(
         filename=filename, kind=row["kind"], status="ok", transcript_path=str(path),
         summary=summary, duration_ms=int((time.monotonic() - started) * 1000),
+        transcribe_backend=transcribe_backend, summarize_backend=summarize_backend,
     )
 
 

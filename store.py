@@ -25,20 +25,38 @@ CREATE TABLE IF NOT EXISTS runs (
     log_path     TEXT
 );
 CREATE TABLE IF NOT EXISTS files (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id          INTEGER NOT NULL REFERENCES runs(id),
-    filename        TEXT NOT NULL,
-    kind            TEXT NOT NULL,
-    transcript_path TEXT,
-    summary         TEXT,
-    status          TEXT NOT NULL,
-    error           TEXT,
-    duration_ms     INTEGER,
-    created_at      TEXT NOT NULL
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id             INTEGER NOT NULL REFERENCES runs(id),
+    filename           TEXT NOT NULL,
+    kind               TEXT NOT NULL,
+    transcript_path    TEXT,
+    summary            TEXT,
+    status             TEXT NOT NULL,
+    error              TEXT,
+    duration_ms        INTEGER,
+    created_at         TEXT NOT NULL,
+    transcribe_backend TEXT,
+    summarize_backend  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_files_run ON files(run_id);
 CREATE INDEX IF NOT EXISTS idx_files_id ON files(id DESC);
 """
+
+# Columns added after the initial release: CREATE TABLE above only applies to a
+# brand-new DB, so an existing files table (e.g. already deployed on the Pi)
+# needs these added explicitly.
+_FILES_MIGRATIONS = {
+    "transcribe_backend": "TEXT",
+    "summarize_backend": "TEXT",
+}
+
+
+def _ensure_columns(conn, table, columns):
+    """ALTER TABLE ``table`` to add any of ``columns`` (name -> SQL type) missing."""
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for name, col_type in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}")
 
 
 def _utcnow():
@@ -53,6 +71,7 @@ def _connect():
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(_SCHEMA)  # all IF NOT EXISTS; cheap when the DB is set up
+    _ensure_columns(conn, "files", _FILES_MIGRATIONS)
     try:
         yield conn
         conn.commit()
@@ -80,14 +99,22 @@ def start_run(trigger, requested_by=None, log_path=None):
 
 
 def record_file(run_id, filename, kind, status, *, transcript_path=None,
-                summary=None, error=None, duration_ms=None):
-    """Insert one per-file result for ``run_id``."""
+                summary=None, error=None, duration_ms=None,
+                transcribe_backend=None, summarize_backend=None):
+    """Insert one per-file result for ``run_id``.
+
+    ``transcribe_backend``/``summarize_backend`` record which engine produced
+    the transcript/summary, e.g. ``"Groq · whisper-large-v3"`` or
+    ``"local · Ollama qwen3:1.7b"`` — provenance for ``/recap``, ``/stats``, and
+    debugging the Groq-first/local-fallback resilience.
+    """
     with _connect() as conn:
         conn.execute(
             "INSERT INTO files (run_id, filename, kind, transcript_path, summary, "
-            "status, error, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "status, error, duration_ms, created_at, transcribe_backend, summarize_backend) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (run_id, filename, kind, transcript_path, summary, status, error,
-             duration_ms, _utcnow()),
+             duration_ms, _utcnow(), transcribe_backend, summarize_backend),
         )
 
 

@@ -5,5 +5,7 @@
 init-hook = 'import sys; sys.path.insert(0, ".")'
 
 [DESIGN]
-# store.record_file maps 1:1 to its table columns.
-max-args = 8
+# store.record_file maps 1:1 to its table columns (including transcribe/summarize
+# provenance); FileResult mirrors the same fields as a plain data holder.
+max-args = 10
+max-attributes = 10

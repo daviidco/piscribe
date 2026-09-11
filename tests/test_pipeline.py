@@ -71,7 +71,10 @@ def stub_pipeline(monkeypatch):
     sent = []
     monkeypatch.setattr(pipeline, "download_file", lambda name, dest: None)
     monkeypatch.setattr(pipeline, "move_in_drive", lambda name: None)
-    monkeypatch.setattr(pipeline, "generate_summary", lambda text: f"SUMMARY<<{text.strip()}>>")
+    monkeypatch.setattr(
+        pipeline, "generate_summary",
+        lambda text: (f"SUMMARY<<{text.strip()}>>", "local · Ollama test-qwen"),
+    )
     monkeypatch.setattr(pipeline, "send_telegram_message", sent.append)
     return sent
 
@@ -86,11 +89,15 @@ def test_process_file_text_note(work_dirs, stub_pipeline):
     assert len(stub_pipeline) == 1
     assert "nota.txt" in stub_pipeline[0]
     assert "SUMMARY<<acuerdos de la reunion>>" in stub_pipeline[0]
+    assert "_resumen: local · Ollama test-qwen_" in stub_pipeline[0]
+    assert "_transcripción:" not in stub_pipeline[0]  # no transcription stage for text input
     assert not note.exists()  # local copy cleaned up
 
     assert result.status == "ok"
     assert result.kind == "text"
-    assert result.summary == "SUMMARY<<acuerdos de la reunion>>"
+    assert result.summary == "SUMMARY<<acuerdos de la reunion>>"  # signature is not baked in
+    assert result.summarize_backend == "local · Ollama test-qwen"
+    assert result.transcribe_backend is None
     archived = work_dirs.TRANSCRIPTIONS_DIR / "nota.txt"
     assert archived.read_text(encoding="utf-8") == "acuerdos de la reunion"
     assert result.transcript_path == str(archived)
@@ -119,7 +126,8 @@ def test_process_file_cleans_local_copy_when_a_later_step_fails(work_dirs, monke
 # ---------------------------------------------------------------------------
 
 def test_process_video_reads_transcript_and_removes_wav(work_dirs, monkeypatch):
-    """process_video returns whisper's transcript and cleans up the temp .wav."""
+    """process_video falls back to local whisper (no GROQ_API_KEY in tests),
+    returns its transcript and a backend label, and cleans up the temp .wav."""
     monkeypatch.setattr(video, "extract_audio", lambda src, dst: None)
 
     def fake_transcribe(_audio_path, output_base):
@@ -128,19 +136,22 @@ def test_process_video_reads_transcript_and_removes_wav(work_dirs, monkeypatch):
             "transcripcion simulada", encoding="utf-8"
         )
 
-    monkeypatch.setattr(video, "transcribe", fake_transcribe)
+    monkeypatch.setattr(video, "transcribe_local", fake_transcribe)
 
     local_path = work_dirs.LOCAL_DIR / "clip.mp4"
     local_path.write_bytes(b"fake")
 
-    assert video.process_video("clip.mp4", local_path) == "transcripcion simulada"
+    text, backend = video.process_video("clip.mp4", local_path)
+
+    assert text == "transcripcion simulada"
+    assert backend == "local · whisper.cpp (ggml-small)"
     assert not (work_dirs.LOCAL_DIR / "clip.wav").exists()
 
 
 def test_process_video_raises_when_whisper_writes_nothing(work_dirs, monkeypatch):
     """A clean whisper exit that produces no file surfaces as a RuntimeError."""
     monkeypatch.setattr(video, "extract_audio", lambda src, dst: None)
-    monkeypatch.setattr(video, "transcribe", lambda a, b: None)  # writes no .txt
+    monkeypatch.setattr(video, "transcribe_local", lambda a, b: None)  # writes no .txt
 
     local_path = work_dirs.LOCAL_DIR / "clip.mp4"
     local_path.write_bytes(b"fake")
@@ -276,14 +287,19 @@ def test_resummarize_file_uses_the_stored_transcript(monkeypatch):
     store.finish_run(rid, "ok", 1, 1)
 
     sent = []
-    monkeypatch.setattr(pipeline, "generate_summary", lambda text: f"RE<<{text}>>")
+    monkeypatch.setattr(
+        pipeline, "generate_summary",
+        lambda text: (f"RE<<{text}>>", "local · Ollama test-qwen"),
+    )
     monkeypatch.setattr(pipeline, "send_telegram_message", sent.append)
 
     result = pipeline.resummarize_file("nota.txt")
 
     assert result.status == "ok"
     assert sent and "RE<<texto original de la reunion>>" in sent[0]
+    assert "_resumen: local · Ollama test-qwen_" in sent[0]
     assert store.nth_file(1)["summary"] == "RE<<texto original de la reunion>>"
+    assert store.nth_file(1)["summarize_backend"] == "local · Ollama test-qwen"
 
 
 @pytest.mark.usefixtures("work_dirs")

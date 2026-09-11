@@ -1,5 +1,7 @@
 """Tests for the SQLite run/file history store."""
 
+import sqlite3
+
 import store
 
 
@@ -79,3 +81,64 @@ def test_stats_counts_recent_activity():
     assert data["errors_7d"] == 1
     assert data["runs_7d"] == 1
     assert data["avg_ms_7d"] == 3000
+
+
+def test_record_file_stores_backend_provenance():
+    """record_file keeps which engine transcribed/summarized a file."""
+    store.init_db()
+    rid = store.start_run("cron")
+    store.record_file(rid, "reunion.mp4", "video", "ok",
+                      transcribe_backend="Groq · whisper-large-v3",
+                      summarize_backend="local · Ollama qwen3:1.7b")
+
+    row = store.nth_file(1)
+    assert row["transcribe_backend"] == "Groq · whisper-large-v3"
+    assert row["summarize_backend"] == "local · Ollama qwen3:1.7b"
+
+
+def test_migration_adds_backend_columns_to_a_pre_existing_files_table():
+    """A files table created before the Groq columns existed still works.
+
+    Simulates the Pi's already-deployed piscribe.db: the old schema is
+    created by hand (no transcribe_backend/summarize_backend), then the
+    normal store API is used — _connect() must ALTER TABLE them in rather
+    than fail with "no such column".
+    """
+    conn = sqlite3.connect(store.DB_PATH)
+    conn.executescript("""
+        CREATE TABLE runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trigger TEXT NOT NULL,
+            requested_by TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            status TEXT NOT NULL,
+            files_total INTEGER NOT NULL DEFAULT 0,
+            files_ok INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            log_path TEXT
+        );
+        CREATE TABLE files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            filename TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            transcript_path TEXT,
+            summary TEXT,
+            status TEXT NOT NULL,
+            error TEXT,
+            duration_ms INTEGER,
+            created_at TEXT NOT NULL
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+    run_id = store.start_run("cron")
+    store.record_file(run_id, "old.mp4", "video", "ok",
+                      transcribe_backend="Groq · whisper-large-v3",
+                      summarize_backend="local · Ollama qwen3:1.7b")
+
+    row = store.nth_file(1)
+    assert row["transcribe_backend"] == "Groq · whisper-large-v3"
+    assert row["summarize_backend"] == "local · Ollama qwen3:1.7b"
