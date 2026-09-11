@@ -133,6 +133,9 @@ def process_video(filename, local_path):
         filename: Original file name, used to derive output names.
         local_path: Path to the downloaded video on disk.
 
+    Either way the transcript is archived to ``TRANSCRIPTIONS_DIR/{stem}.txt``
+    so ``/transcript`` and ``/resummarize`` can find it later.
+
     Returns:
         A ``(text, backend_label)`` tuple, e.g. ``(text, "Groq · whisper-large-v3")``
         or ``(text, "local · whisper.cpp (ggml-small)")``.
@@ -142,13 +145,14 @@ def process_video(filename, local_path):
             cleanly but writes no transcript file.
     """
     stem = Path(filename).stem
+    txt_output = TRANSCRIPTIONS_DIR / stem
 
     text = _try_groq_transcription(local_path, stem)
     if text is not None:
+        Path(f"{txt_output}.txt").write_text(text, encoding="utf-8")
         return text, f"Groq · {GROQ_WHISPER_MODEL}"
 
     local_audio = local_path.parent / f"{stem}.wav"
-    txt_output = TRANSCRIPTIONS_DIR / stem
     extract_audio(local_path, local_audio)
     try:
         transcribe_local(local_audio, txt_output)

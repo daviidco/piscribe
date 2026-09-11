@@ -27,6 +27,8 @@ def test_groq_transcription_used_when_it_succeeds(work_dirs, monkeypatch):
 
     assert text == "transcripcion de groq"
     assert backend == "Groq · whisper-large-v3"
+    archived = work_dirs.TRANSCRIPTIONS_DIR / "clip.txt"
+    assert archived.read_text(encoding="utf-8") == "transcripcion de groq"
 
 
 def test_groq_failure_falls_back_to_local(work_dirs, monkeypatch, read_log):

@@ -9,7 +9,13 @@ anything else. Every attempt and fallback is logged.
 import ollama
 from groq import Groq
 
-from config import GROQ_API_KEY, GROQ_MODEL, GROQ_TIMEOUT_SECONDS, QWEN_MODEL
+from config import (
+    GROQ_API_KEY,
+    GROQ_MAX_COMPLETION_TOKENS,
+    GROQ_MODEL,
+    GROQ_TIMEOUT_SECONDS,
+    QWEN_MODEL,
+)
 from utils import log
 
 # The prompt's wording/line lengths are content, not code — kept verbatim.
@@ -111,20 +117,30 @@ def _summarize_groq(prompt):
     final answer; any reasoning trace the model produces goes to
     ``message.reasoning`` and is discarded.
 
+    A response cut short by ``GROQ_MAX_COMPLETION_TOKENS`` (``finish_reason ==
+    "length"``) is treated as a failure rather than returned incomplete, so a
+    dense, multi-participant meeting falls back to local Ollama instead of
+    silently delivering a truncated summary.
+
     Raises:
         Exception: Any failure from the Groq client (network, timeout, rate
-            limit, context length, invalid key, ...). Callers are expected to
-            fall back to :func:`_summarize_local`.
+            limit, context length, invalid key, truncated response, ...).
+            Callers are expected to fall back to :func:`_summarize_local`.
     """
     client = Groq(api_key=GROQ_API_KEY, timeout=GROQ_TIMEOUT_SECONDS)
     completion = client.chat.completions.create(
         model=GROQ_MODEL,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
-        max_completion_tokens=2048,
+        max_completion_tokens=GROQ_MAX_COMPLETION_TOKENS,
         reasoning_format="parsed",
     )
-    return completion.choices[0].message.content.strip()
+    choice = completion.choices[0]
+    if choice.finish_reason == "length":
+        raise RuntimeError(
+            f"response truncated at GROQ_MAX_COMPLETION_TOKENS={GROQ_MAX_COMPLETION_TOKENS}"
+        )
+    return choice.message.content.strip()
 
 
 def generate_summary(text):

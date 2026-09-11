@@ -1,9 +1,32 @@
 """Tests for summary.py: Groq-first summarization, local Ollama fallback."""
 
-# Reaches into the module's own prompt template on purpose.
+# Reaches into the module's own prompt template and Groq wrapper on purpose.
 # pylint: disable=protected-access
 
+from types import SimpleNamespace
+
 import summary
+
+
+class _FakeCompletions:  # pylint: disable=too-few-public-methods
+    """Stand-in for client.chat.completions with a canned response."""
+
+    def __init__(self, content, finish_reason="stop"):
+        self._content = content
+        self._finish_reason = finish_reason
+
+    def create(self, **_kwargs):
+        """Return a fake completion shaped like the real Groq SDK response."""
+        message = SimpleNamespace(content=self._content, reasoning=None)
+        choice = SimpleNamespace(message=message, finish_reason=self._finish_reason)
+        return SimpleNamespace(choices=[choice])
+
+
+class _FakeGroqClient:  # pylint: disable=too-few-public-methods
+    """Stand-in for groq.Groq exposing just .chat.completions.create."""
+
+    def __init__(self, content, finish_reason="stop"):
+        self.chat = SimpleNamespace(completions=_FakeCompletions(content, finish_reason))
 
 
 def test_groq_summary_used_when_it_succeeds(monkeypatch):
@@ -55,6 +78,45 @@ def test_no_api_key_skips_groq_entirely(monkeypatch):
 
     assert text == "resumen local"
     assert backend.startswith("local ·")
+
+
+def test_summarize_groq_returns_content_on_a_normal_finish(monkeypatch):
+    """_summarize_groq returns the text when the model finished normally."""
+    monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
+    monkeypatch.setattr(
+        summary, "Groq", lambda **_kw: _FakeGroqClient("resumen completo", "stop")
+    )
+
+    assert summary._summarize_groq("prompt") == "resumen completo"
+
+
+def test_summarize_groq_raises_when_truncated_by_the_token_cap(monkeypatch):
+    """A finish_reason of 'length' is treated as a failure, not a partial success."""
+    monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
+    monkeypatch.setattr(
+        summary, "Groq", lambda **_kw: _FakeGroqClient("resumen a medi", "length")
+    )
+
+    try:
+        summary._summarize_groq("prompt")
+        raise AssertionError("expected a RuntimeError for a truncated response")
+    except RuntimeError as e:
+        assert "truncat" in str(e)
+
+
+def test_truncated_groq_response_falls_back_to_local(monkeypatch, read_log):
+    """generate_summary falls back to local when Groq's answer got cut short."""
+    monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
+    monkeypatch.setattr(
+        summary, "Groq", lambda **_kw: _FakeGroqClient("resumen a medi", "length")
+    )
+    monkeypatch.setattr(summary, "_summarize_local", lambda prompt: "resumen local completo")
+
+    text, backend = summary.generate_summary("texto de la reunion")
+
+    assert text == "resumen local completo"
+    assert backend == f"local · Ollama {summary.QWEN_MODEL}"
+    assert "truncat" in read_log()
 
 
 def test_prompt_template_carries_the_transcript_and_the_spanish_instruction():

@@ -55,6 +55,10 @@ GROQ_WHISPER_MODEL = os.environ.get("GROQ_WHISPER_MODEL", "whisper-large-v3")
 GROQ_TIMEOUT_SECONDS = float(os.environ.get("GROQ_TIMEOUT_SECONDS", "20"))
 GROQ_AUDIO_TIMEOUT_SECONDS = float(os.environ.get("GROQ_AUDIO_TIMEOUT_SECONDS", "60"))
 GROQ_MAX_AUDIO_MB = float(os.environ.get("GROQ_MAX_AUDIO_MB", "24"))
+# The detailed prompt can need a long answer for a dense, multi-participant
+# meeting; a response cut short by this cap is treated as a failure and falls
+# back to local Ollama rather than delivered incomplete (see summary.py).
+GROQ_MAX_COMPLETION_TOKENS = int(os.environ.get("GROQ_MAX_COMPLETION_TOKENS", "8192"))
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi"}
 TEXT_EXTENSIONS = {".txt", ".md"}
