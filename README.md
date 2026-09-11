@@ -3,9 +3,12 @@
 <img src="icon.png" alt="piscribe" width="96" align="right">
 
 A lightweight pipeline that watches a Google Drive folder for meeting recordings or
-notes, transcribes them locally, generates a concise Spanish summary with a local
-LLM, and delivers the result to Telegram. Built to run unattended from cron on a
-Raspberry Pi, with an optional Telegram bot for status queries and manual runs.
+notes, transcribes them, generates a detailed Spanish summary, and delivers the
+result to Telegram. Transcription and summarization try Groq's hosted models
+first and fall back automatically to the local `whisper.cpp` / Ollama stack on
+any failure — or run fully local if no `GROQ_API_KEY` is configured. Built to
+run unattended from cron on a Raspberry Pi, with an optional Telegram bot for
+status queries and manual runs.
 
 ## Overview
 
@@ -16,25 +19,36 @@ On each run it:
 2. Downloads each file locally and moves it to a "processed" folder in Drive so it
    is not handled twice.
 3. Extracts the content:
-   - **Video** (`.mp4`, `.mov`, `.mkv`, `.avi`) &rarr; audio is extracted with
-     `ffmpeg` and transcribed with [`whisper.cpp`](https://github.com/ggerganov/whisper.cpp).
+   - **Video** (`.mp4`, `.mov`, `.mkv`, `.avi`) &rarr; audio is extracted, then
+     transcribed with **Groq's hosted `whisper-large-v3`** first; any failure
+     (no key configured, network, rate limit, oversized file, ...) falls back to
+     the local [`whisper.cpp`](https://github.com/ggerganov/whisper.cpp) binary.
    - **Text** (`.txt`, `.md`) &rarr; read directly.
-4. Sends the transcript to a local [Qwen](https://ollama.com/library/qwen3) model
-   served by [Ollama](https://ollama.com/) and asks for a clear, concise summary in
-   Spanish highlighting key points, decisions, and open items.
-5. Posts the summary to one or more Telegram chats through the Bot API.
-6. Cleans up the local download, archives the transcript, records the run in a
-   SQLite history, and writes a per-run log.
+4. Summarizes the text, again **Groq-first with a local fallback** — a hosted Qwen
+   chat model on Groq, or the local [Qwen](https://ollama.com/library/qwen3) model
+   served by [Ollama](https://ollama.com/) — asking for a detailed, structured
+   Spanish summary (synthesis, key points, decisions, commitments with
+   owner/deadline, risks, open items), attributing statements to a speaker only
+   when the transcript makes that identifiable.
+5. Posts the summary to one or more Telegram chats through the Bot API, signed
+   with which engine transcribed and summarized it (e.g. `_resumen: Groq ·
+   qwen/qwen3.8-27b_` or `_resumen: local · Ollama qwen3:1.7b_`).
+6. Cleans up the local download, archives the transcript, records the run (and
+   which engine handled each stage) in a SQLite history, and writes a per-run log.
 
-Everything runs on your machine — transcription and summarization never leave the
-host. A separate long-polling bot (`bot.py`) answers `/status`, `/recap`,
+Groq is entirely optional: leave `GROQ_API_KEY` blank in `.env` and every run
+uses the local `whisper.cpp` / Ollama stack only, with nothing leaving the host.
+A separate long-polling bot (`bot.py`) answers `/status`, `/recap`,
 `/transcript`, `/logs`, `/history` and can trigger a pass with `/run`.
 
 ## Features
 
 - **Drive-driven queue** — drop a file in a folder, get a summary back. No UI needed.
-- **Local transcription** with `whisper.cpp` and automatic language detection.
-- **Local summarization** with a small Qwen model via Ollama (no API keys, no cloud).
+- **Groq-first, local-fallback transcription and summarization** — tries Groq's
+  hosted `whisper-large-v3` and Qwen chat model, and falls back automatically to
+  `whisper.cpp` / Ollama on any failure (or always, if no `GROQ_API_KEY` is set).
+- **Engine provenance** — every summary is signed with which backend produced it,
+  and it's recorded in the SQLite history too.
 - **Always-Spanish summaries** regardless of the source language.
 - **Multi-recipient Telegram delivery** with Markdown formatting.
 - **Idempotent processing** — files are moved to a processed folder as soon as they
@@ -55,9 +69,9 @@ host. A separate long-polling bot (`bot.py`) answers `/status`, `/recap`,
 | [runlock.py](runlock.py)                                                            | Cross-process `flock` run lock, records the holder PID        |
 | [config.py](config.py)                                                              | Paths and environment configuration                           |
 | [drive.py](drive.py)                                                                | `rclone` wrappers: list, download, move files in Drive        |
-| [video.py](video.py)                                                                | Audio extraction (`ffmpeg`) and transcription (`whisper.cpp`) |
+| [video.py](video.py)                                                                | Audio extraction; transcription via Groq `whisper-large-v3` with local `whisper.cpp` fallback |
 | [text.py](text.py)                                                                  | Reads plain-text / Markdown inputs                            |
-| [summary.py](summary.py)                                                            | Summary generation via Ollama / Qwen                          |
+| [summary.py](summary.py)                                                            | Summary generation via Groq (Qwen chat) with local Ollama fallback |
 | [telegram_api.py](telegram_api.py)                                                  | Outbound Bot API helpers (`curl`-based)                       |
 | [utils.py](utils.py)                                                                | Timestamped logging helper                                    |
 | [install.sh](install.sh)                                                            | Virtualenv, runtime dirs, `.env`, cron entry                  |
@@ -72,7 +86,7 @@ host. A separate long-polling bot (`bot.py`) answers `/status`, `/recap`,
 - Python 3.9+ with `python3-venv` (`sudo apt install python3-venv` on Raspberry Pi OS);
   developed and tested on **Python 3.13.5**
 - Python packages from [requirements.txt](requirements.txt) (`python-dotenv`, `ollama`,
-  `python-telegram-bot`), installed into a virtualenv by `install.sh`
+  `python-telegram-bot`, `groq`), installed into a virtualenv by `install.sh`
 - [`git`](https://git-scm.com/)
 - [`rclone`](https://rclone.org/) with a Google Drive remote — see
   [docs/google-drive-setup.md](docs/google-drive-setup.md)
@@ -86,6 +100,10 @@ host. A separate long-polling bot (`bot.py`) answers `/status`, `/recap`,
   Python package the pipeline uses to talk to it)
 - A Telegram bot token and the target chat IDs — see
   [docs/telegram-bot-setup.md](docs/telegram-bot-setup.md)
+- Optionally, a [Groq](https://console.groq.com/) API key to prefer their hosted
+  `whisper-large-v3` and Qwen chat model over the local stack; leave it unset to
+  run fully local. Free-tier per-minute token limits mean long meetings often
+  fall back to local anyway — see the Notes below.
 
 ## Setup
 
@@ -139,7 +157,12 @@ The external tools (`rclone`, `whisper.cpp`, Ollama) are set up once by hand;
    | `RCLONE_REMOTE`    | Name of the configured `rclone` remote (e.g. `gdrive`)       |
    | `PENDING_FOLDER`   | Drive folder to watch for new files                          |
    | `PROCESSED_FOLDER` | Drive folder that processed files are moved to               |
-   | `QWEN_MODEL`       | Ollama model name used for summarization (e.g. `qwen3:1.7b`) |
+   | `QWEN_MODEL`       | Local Ollama model name used for summarization (e.g. `qwen3:1.7b`) |
+   | `GROQ_API_KEY`     | Optional; blank disables Groq and runs fully local            |
+
+   `GROQ_MODEL`, `GROQ_WHISPER_MODEL`, and the Groq timeout/size-limit knobs have
+   code defaults and are not prompted for — set them in `.env` only to override,
+   see [.env.example](.env.example).
 
    > `install.sh` only touches the virtualenv, `~/whisper.cpp/`'s runtime
    > directories, and `.env`. The code stays in the checkout; re-run the script
@@ -237,49 +260,61 @@ the run lock, the SQLite store (history / search / stats), `run` / `retry` /
         ▼                                  │
 Google Drive (pendings/) ─ rclone ─►  local download
         │                                  │
-        │                     video? ─► ffmpeg ─► whisper.cpp ─► transcript
-        │                     text?  ──────────────────────────► file contents
+        │           video? ─► ffmpeg ─► Groq whisper-large-v3 ─► transcript
+        │                       │              │ (fail/no key)
+        │                       │              ▼
+        │                       │        local whisper.cpp ─► transcript
+        │           text?  ─────────────────────────────────► file contents
         ▼                                  ▼
-  move to processed/            Ollama + Qwen ─► Spanish summary
-        │                                  │
+  move to processed/       Groq Qwen chat ─► Spanish summary
+        │                       │ (fail/no key)
+        │                       ▼
+        │                 local Ollama + Qwen ─► Spanish summary
         ▼                                  ▼
-  SQLite store + run log        Telegram Bot API ─► chat(s)
+  SQLite store + run log        Telegram Bot API ─► chat(s), signed with engine
         ▲                                  │
         └─────────  bot reads  ◄───────────┘  /status /recap /transcript /logs …
 ```
 
 ```mermaid
 graph TD
-    A[Usuario Telegram] -->|/run archivo.wav| B[Bot.py]
-    A -->|/status| B
-    A -->|/pause| B
+    A[Usuario Telegram] -->|"/status /recap /transcript /logs /history /pending /stats /find /version /whoami /help"| B[Bot.py]
+    A -->|"/run /retry /resummarize"| B
+    A -->|"/cancel"| B
+    A -->|"/pause /resume"| B
 
-    B -->|Valida comandos| C{¿Comando válido?}
-    C -->|Sí| D[Ejecuta handler]
+    B -->|Valida y autoriza| C{Comando valido?}
     C -->|No| E[Responde error]
+    C -->|Consulta| D["Lee Store.py / Drive.py / archivo"]
+    C -->|"/run /retry /resummarize"| F2["Spawnea Pipeline.py (PISCRIBE_MODE / PISCRIBE_ONLY)"]
+    C -->|"/cancel"| P["SIGTERM al PID del lock"]
+    C -->|"/pause /resume"| Q["Toggle piscribe.paused"]
 
-    D -->|/run| F[Pipeline.py]
-    D -->|/stats| G[Store.py]
-    D -->|/find| G
+    F2 --> F[Pipeline.py]
+    P -. detiene .-> F
+    Q -. consulta al iniciar .-> F
 
     F -->|Descarga archivo| H[Drive.py]
-    F -->|Transcribe audio| I[Whisper.cpp]
-    F -->|Genera resumen| J[OpenAI API]
-    F -->|Guarda resultados| G
+    F -->|Transcribe audio| I["Groq whisper-large-v3 / whisper.cpp local"]
+    F -->|Genera resumen| J["Groq Qwen chat / Ollama local"]
+    F -->|Guarda resultados| G[Store.py]
 
     H -->|rclone| K[Google Drive]
-
     G -->|SQLite| L[(Base de datos)]
+    D -->|SQLite| L
 
-    M[Cron Job] -->|Ejecución automática| F
-    M -->|L-V 10-17/2| M
+    F -->|Envia resumen firmado| O[Telegram Bot API]
+    O --> A
 
-    F -->|Registra| N[cron.log]
+    M["Cron Job (L-V 10-17, cada 2h)"] -->|flock compartido| F
+
+    F -->|Registra| N["cron.log + run log"]
     B -->|Logs| N
 
     style A fill:#f9f,stroke:#333
-    style L fill:#bbf,stroke:#333
-    style I fill:#bfb,stroke:#333
+    style L fill:#1a3a6b,stroke:#333,color:#fff
+    style I fill:#b35c00,stroke:#333,color:#fff
+    style J fill:#b35c00,stroke:#333,color:#fff
 ```
 
 ## Notes & limitations
@@ -288,6 +323,13 @@ graph TD
   else in the folder is ignored.
 - The summary prompt and output language are hard-coded to Spanish in
   [summary.py](summary.py).
+- Groq's free tier has generous **daily** limits but a tight **per-minute** token
+  cap; a full-length meeting summary can exceed it on a single request, so on the
+  free tier the summary step often falls back to local Ollama — by design, not a
+  bug. Transcription rarely hits Groq's audio limits at a few meetings a day.
+- Each processed file records which engine transcribed and summarized it
+  (`transcribe_backend`/`summarize_backend` in the SQLite store) and the
+  Telegram message is signed with both, so you can see when a run fell back.
 - A `flock` at `~/whisper.cpp/piscribe.lock` serializes runs; a pass that can't
   take it exits without working (it does not queue).
 - `touch ~/whisper.cpp/piscribe.paused` makes runs record as `skipped` without

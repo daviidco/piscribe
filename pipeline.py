@@ -85,7 +85,7 @@ def _kind_of(filename):
     return "video" if Path(filename).suffix.lower() in VIDEO_EXTENSIONS else "text"
 
 
-def _signed_message(filename, summary, transcribe_backend, summarize_backend, label="Summary"):
+def _signed_message(filename, summary, transcribe_backend, summarize_backend, label="Resumen"):
     """Build the outbound Telegram text, signed with the engine(s) that produced it."""
     lines = [f"📋 {label}: {filename}", "", summary, ""]
     if transcribe_backend:
@@ -183,7 +183,7 @@ def _resummarize(filename):
     summary, summarize_backend = generate_summary(text)
     transcribe_backend = row.get("transcribe_backend")
     send_telegram_message(_signed_message(
-        filename, summary, transcribe_backend, summarize_backend, label="Summary (re)"
+        filename, summary, transcribe_backend, summarize_backend, label="Resumen (re)"
     ))
     log(f"Done: {filename}")
     return FileResult(
