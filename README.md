@@ -2,6 +2,8 @@
 
 <img src="icon.png" alt="piscribe" width="96" align="right">
 
+**Current version:** [v1.0.0](CHANGELOG.md) — see [CHANGELOG.md](CHANGELOG.md) for release notes.
+
 A lightweight pipeline that watches a Google Drive folder for meeting recordings or
 notes, transcribes them, generates a detailed Spanish summary, and delivers the
 result to Telegram. Transcription and summarization try Groq's hosted models
@@ -85,8 +87,10 @@ A separate long-polling bot (`bot.py`) answers `/status`, `/recap`,
 | [text.py](text.py)                                                                  | Reads plain-text / Markdown inputs                            |
 | [summary.py](summary.py)                                                            | Summary generation via Groq (Qwen chat) with local Ollama fallback |
 | [telegram_api.py](telegram_api.py)                                                  | Outbound Bot API helpers (`curl`-based)                       |
-| [utils.py](utils.py)                                                                | Timestamped logging helper                                    |
+| [utils.py](utils.py)                                                                | UTC, level-aware logging (rotation, per-run log files)         |
 | [install.sh](install.sh)                                                            | Virtualenv, runtime dirs, `.env`, cron entry                  |
+| [VERSION](VERSION)                                                                  | Current semantic version, shown by `/version`                 |
+| [CHANGELOG.md](CHANGELOG.md)                                                        | Release notes (Keep a Changelog format)                       |
 | [systemd/piscribe-bot.service](systemd/piscribe-bot.service)                        | User service unit for the bot                                 |
 | [requirements.txt](requirements.txt) / [requirements-dev.txt](requirements-dev.txt) | Pinned runtime / test dependencies                            |
 | [tests/](tests/)                                                                    | `pytest` suite (external tools stubbed)                       |

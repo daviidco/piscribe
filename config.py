@@ -17,6 +17,17 @@ load_dotenv()
 
 REPO_DIR = Path(__file__).resolve().parent
 
+
+def _read_version():
+    """App version from the ``VERSION`` file at the repo root (see CHANGELOG.md)."""
+    try:
+        return (REPO_DIR / "VERSION").read_text(encoding="utf-8").strip() or "0.0.0"
+    except FileNotFoundError:
+        return "0.0.0"
+
+
+VERSION = _read_version()
+
 HOME = Path.home()
 WHISPER_DIR = HOME / "whisper.cpp"
 LOCAL_DIR = WHISPER_DIR / "local_pending"

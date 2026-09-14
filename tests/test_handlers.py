@@ -89,6 +89,14 @@ def test_version_reports_groq_status(monkeypatch):
     assert any("Groq ·" in t for t in msg.texts)
 
 
+def test_version_reports_the_app_version_from_the_version_file(monkeypatch):
+    """/version shows config.VERSION (read from the VERSION file), not just the git SHA."""
+    monkeypatch.setattr(config, "VERSION", "9.9.9")
+    upd, msg = _update(_uid())
+    asyncio.run(handlers.version_cmd(upd, _ctx()))
+    assert any("v9.9.9" in t for t in msg.texts)
+
+
 def test_authorized_ignores_unknown_ids():
     """A caller outside TG_CHAT_IDS gets no reply at all."""
     upd, msg = _update(999999)  # not in the "1,2" allowlist

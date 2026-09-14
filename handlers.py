@@ -211,8 +211,11 @@ async def whoami(update, context):
 
 @authorized
 async def version_cmd(update, context):
-    """/version — checkout SHA and every configured model (cloud + local)."""
-    lines = [f"piscribe {version()}", f"resumen local: Ollama {config.QWEN_MODEL}"]
+    """/version — app version, checkout SHA, and every configured model (cloud + local)."""
+    lines = [
+        f"piscribe v{config.VERSION} ({version()})",
+        f"resumen local: Ollama {config.QWEN_MODEL}",
+    ]
     if config.GROQ_API_KEY:
         lines.append(f"resumen: Groq · {config.GROQ_MODEL}")
         lines.append(f"transcripción: Groq · {config.GROQ_WHISPER_MODEL}")
@@ -464,7 +467,9 @@ async def post_init(application):
     """Announce startup to the chats once the bot is up."""
     for chat_id in config.TG_CHAT_IDS:
         try:
-            await application.bot.send_message(chat_id, f"🤖 piscribe-bot online ({version()})")
+            await application.bot.send_message(
+                chat_id, f"🤖 piscribe-bot online (v{config.VERSION}, {version()})"
+            )
         except Exception as e:  # noqa: BLE001  pylint: disable=broad-exception-caught
             log.warning("startup ping to %s failed: %s", chat_id, e)
 
