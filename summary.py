@@ -32,12 +32,13 @@ Conservar todos los detalles relevantes de la conversación sin convertir el res
 4. Atribuye cada punto a la persona correspondiente únicamente cuando el nombre o la identidad del hablante estén disponibles o puedan inferirse con seguridad.
 5. Si un punto fue mencionado por varias personas, indícalo cuando sea relevante.
 6. Conserva fechas, cifras, nombres de proyectos, productos, clientes, sistemas, plazos, dependencias y cualquier otro dato concreto presente en la transcripción.
-7. Mantén el contexto necesario para que cada punto pueda entenderse sin consultar la transcripción original.
-8. Señala contradicciones, ambigüedades o información insuficiente sin intentar resolverlas por cuenta propia.
-9. No confundas una intención o sugerencia con un compromiso confirmado.
-10. Si una sección no está respaldada por la transcripción, omítela por completo. No escribas frases como «no se mencionó», «sin información» o similares.
-11. Si la transcripción contiene errores, interrupciones o frases incompletas, interpreta solo lo que pueda determinarse razonablemente y marca como incierto cualquier aspecto dudoso.
-12. Evita repetir el mismo contenido en varias secciones, salvo que sea necesario para relacionar un problema con su resolución o con un compromiso.
+7. Los números de ticket son números enteros de 4 dígitos (por ejemplo 3619). Escríbelos siempre completos y juntos, sin puntos, espacios ni barras — nunca "36.19", "36/19" ni "36 19".
+8. Mantén el contexto necesario para que cada punto pueda entenderse sin consultar la transcripción original.
+9. Señala contradicciones, ambigüedades o información insuficiente sin intentar resolverlas por cuenta propia.
+10. No confundas una intención o sugerencia con un compromiso confirmado.
+11. Si una sección no está respaldada por la transcripción, omítela por completo. No escribas frases como «no se mencionó», «sin información» o similares.
+12. Si la transcripción contiene errores, interrupciones o frases incompletas, interpreta solo lo que pueda determinarse razonablemente y marca como incierto cualquier aspecto dudoso.
+13. Evita repetir el mismo contenido en varias secciones, salvo que sea necesario para relacionar un problema con su resolución o con un compromiso.
 
 ## Formato de salida
 Usa Markdown claro, profesional y español. Incluye únicamente las secciones que tengan contenido respaldado por la transcripción, siguiendo este orden preferente:
@@ -94,6 +95,7 @@ Comprueba que:
 - No se ha añadido información que no esté en la transcripción.
 - Se han omitido las secciones sin contenido.
 - El resumen es detallado, pero no repite innecesariamente la transcripción.
+- Todo número de ticket aparece completo y junto (4 dígitos, sin puntos ni barras).
 
 ## Transcripción completa
 
@@ -112,6 +114,10 @@ Comprueba que:
 _PROMPT_TEMPLATE_GROQ = """Analiza la transcripción que aparece al final y devuelve un resumen breve y fiel en español, en Markdown. No inventes nombres, fechas ni datos que no estén en el texto; atribuí una afirmación a alguien solo si su identidad es clara por nombre o contexto. Si algo no se puede determinar con seguridad, omitilo — no lo adivines.
 
 Sé conciso: máximo 3-4 viñetas por sección, sin relleno ni repetición.
+
+Los números de ticket son números enteros de 4 dígitos (ej. 3619). Escríbelos
+siempre completos y juntos, sin puntos, espacios ni barras — nunca "36.19",
+"36/19" ni "36 19".
 
 ## Resumen
 1-2 párrafos cortos: propósito de la reunión y resultado general.

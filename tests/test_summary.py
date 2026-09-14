@@ -214,6 +214,16 @@ def test_detailed_prompt_template_carries_the_transcript_and_the_spanish_instruc
     assert "No inventes información" in prompt
 
 
+def test_both_prompts_require_ticket_numbers_to_stay_as_one_4_digit_number():
+    """Neither prompt should let the model split a ticket number like 3619
+    into '36.19' or '36/19' — this was observed in a real summary."""
+    for template in (summary._PROMPT_TEMPLATE, summary._PROMPT_TEMPLATE_GROQ):
+        prompt = template.format(text="texto")
+        assert "3619" in prompt
+        assert "36.19" in prompt
+        assert "36/19" in prompt
+
+
 def test_groq_prompt_template_is_short_and_capped():
     """Sanity check on the concise prompt (Groq only): shorter, capped output,
     same anti-hallucination rule, and distinct from the detailed one."""

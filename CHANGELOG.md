@@ -29,6 +29,9 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
 
 ### Fixed
 
+- Both prompts now explicitly require ticket numbers to be written as one
+  whole 4-digit number (e.g. `3619`), never split with a dot or a slash
+  (`36.19`, `36/19`) — observed in a real summary.
 - A Groq summary from the reasoning model (`qwen/qwen3.8-27b`) could come
   back visibly incomplete (missing entire sections) while Groq still reported
   `finish_reason="stop"`, because its discarded chain-of-thought reasoning
