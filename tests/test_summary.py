@@ -11,22 +11,30 @@ import summary
 class _FakeCompletions:  # pylint: disable=too-few-public-methods
     """Stand-in for client.chat.completions with a canned response."""
 
-    def __init__(self, content, finish_reason="stop"):
+    def __init__(self, content, finish_reason="stop", completion_tokens=None):
         self._content = content
         self._finish_reason = finish_reason
+        self._completion_tokens = completion_tokens
 
     def create(self, **_kwargs):
         """Return a fake completion shaped like the real Groq SDK response."""
         message = SimpleNamespace(content=self._content, reasoning=None)
         choice = SimpleNamespace(message=message, finish_reason=self._finish_reason)
-        return SimpleNamespace(choices=[choice])
+        usage = (
+            SimpleNamespace(completion_tokens=self._completion_tokens)
+            if self._completion_tokens is not None
+            else None
+        )
+        return SimpleNamespace(choices=[choice], usage=usage)
 
 
 class _FakeGroqClient:  # pylint: disable=too-few-public-methods
     """Stand-in for groq.Groq exposing just .chat.completions.create."""
 
-    def __init__(self, content, finish_reason="stop"):
-        self.chat = SimpleNamespace(completions=_FakeCompletions(content, finish_reason))
+    def __init__(self, content, finish_reason="stop", completion_tokens=None):
+        self.chat = SimpleNamespace(
+            completions=_FakeCompletions(content, finish_reason, completion_tokens)
+        )
 
 
 def test_groq_summary_used_when_it_succeeds(monkeypatch):
@@ -126,6 +134,37 @@ def test_summarize_groq_raises_when_truncated_by_the_token_cap(monkeypatch):
         assert "truncat" in str(e)
 
 
+def test_summarize_groq_raises_when_completion_tokens_land_near_the_cap(monkeypatch):
+    """A clean finish_reason='stop' is distrusted when completion_tokens lands
+    right at the configured cap — qwen/qwen3.8-27b's reasoning trace can eat
+    most of the shared budget and leave the visible answer short without Groq
+    ever reporting "length" for it (see _GROQ_NEAR_CAP_RATIO)."""
+    monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
+    near_cap_tokens = int(summary.GROQ_MAX_COMPLETION_TOKENS * 0.99)
+    monkeypatch.setattr(
+        summary, "Groq",
+        lambda **_kw: _FakeGroqClient("## Resumen\ncorto", "stop", near_cap_tokens),
+    )
+
+    try:
+        summary._summarize_groq("prompt")
+        raise AssertionError("expected a RuntimeError for a near-cap completion")
+    except RuntimeError as e:
+        assert "truncat" in str(e)
+
+
+def test_summarize_groq_accepts_a_short_answer_well_under_the_cap(monkeypatch):
+    """A short but genuinely complete answer (low completion_tokens) is not
+    penalized just for being short."""
+    monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
+    monkeypatch.setattr(
+        summary, "Groq",
+        lambda **_kw: _FakeGroqClient("## Resumen\ncorto pero completo", "stop", 50),
+    )
+
+    assert summary._summarize_groq("prompt") == "## Resumen\ncorto pero completo"
+
+
 def test_truncated_groq_response_falls_back_to_local(monkeypatch, read_log):
     """generate_summary falls back to local, with the detailed prompt, when
     Groq's answer got cut short."""
@@ -146,6 +185,24 @@ def test_truncated_groq_response_falls_back_to_local(monkeypatch, read_log):
     assert text == "resumen local completo"
     assert backend == f"local · Ollama {summary.QWEN_MODEL}"
     assert seen["prompt"] == summary._PROMPT_TEMPLATE.format(text="texto de la reunion")
+    assert "truncat" in read_log()
+
+
+def test_near_cap_groq_response_falls_back_to_local_even_with_a_clean_stop(monkeypatch, read_log):
+    """generate_summary falls back to local when Groq's completion_tokens lands
+    at the cap, even though finish_reason itself claims a clean 'stop'."""
+    monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
+    near_cap_tokens = int(summary.GROQ_MAX_COMPLETION_TOKENS * 0.99)
+    monkeypatch.setattr(
+        summary, "Groq",
+        lambda **_kw: _FakeGroqClient("## Resumen\ncorto", "stop", near_cap_tokens),
+    )
+    monkeypatch.setattr(summary, "_summarize_local", lambda _prompt: "resumen local completo")
+
+    text, backend = summary.generate_summary("texto de la reunion")
+
+    assert text == "resumen local completo"
+    assert backend == f"local · Ollama {summary.QWEN_MODEL}"
     assert "truncat" in read_log()
 
 

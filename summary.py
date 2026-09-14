@@ -142,6 +142,16 @@ def _summarize_local(prompt):
     return response["response"].strip()  # pylint: disable=no-member
 
 
+# qwen/qwen3.8-27b is a reasoning model: its (discarded) chain-of-thought and
+# its visible answer draw from the SAME max_completion_tokens budget. If the
+# reasoning eats most of it, the model can emit a short, incomplete-looking
+# answer and still stop "cleanly" (finish_reason="stop") right at the edge of
+# the cap, instead of Groq reporting "length". Treating completion_tokens
+# landing this close to the cap as a truncation too — not just an explicit
+# "length" — catches that case as well.
+_GROQ_NEAR_CAP_RATIO = 0.95
+
+
 def _summarize_groq(prompt):
     """Summarize with Groq's hosted chat model.
 
@@ -149,10 +159,13 @@ def _summarize_groq(prompt):
     final answer; any reasoning trace the model produces goes to
     ``message.reasoning`` and is discarded.
 
-    A response cut short by ``GROQ_MAX_COMPLETION_TOKENS`` (``finish_reason ==
-    "length"``) is treated as a failure rather than returned incomplete, so a
-    dense, multi-participant meeting falls back to local Ollama instead of
-    silently delivering a truncated summary.
+    A response that looks token-capped is treated as a failure rather than
+    returned incomplete, so a dense, multi-participant meeting falls back to
+    local Ollama instead of silently delivering a truncated summary. Two
+    signals count as capped: an explicit ``finish_reason != "stop"`` (e.g.
+    ``"length"``), or ``completion_tokens`` landing within
+    ``_GROQ_NEAR_CAP_RATIO`` of ``GROQ_MAX_COMPLETION_TOKENS`` even though
+    Groq reported a clean stop (see ``_GROQ_NEAR_CAP_RATIO`` above).
 
     Raises:
         Exception: Any failure from the Groq client (network, timeout, rate
@@ -168,9 +181,19 @@ def _summarize_groq(prompt):
         reasoning_format="parsed",
     )
     choice = completion.choices[0]
-    if choice.finish_reason == "length":
+    completion_tokens = getattr(getattr(completion, "usage", None), "completion_tokens", None)
+    log(
+        f"Groq finish_reason={choice.finish_reason!r} "
+        f"completion_tokens={completion_tokens}/{GROQ_MAX_COMPLETION_TOKENS}"
+    )
+    near_cap = (
+        completion_tokens is not None
+        and completion_tokens >= GROQ_MAX_COMPLETION_TOKENS * _GROQ_NEAR_CAP_RATIO
+    )
+    if choice.finish_reason != "stop" or near_cap:
         raise RuntimeError(
-            f"response truncated at GROQ_MAX_COMPLETION_TOKENS={GROQ_MAX_COMPLETION_TOKENS}"
+            f"response truncated (finish_reason={choice.finish_reason!r}, "
+            f"completion_tokens={completion_tokens}/{GROQ_MAX_COMPLETION_TOKENS})"
         )
     return choice.message.content.strip()
 

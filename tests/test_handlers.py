@@ -125,6 +125,43 @@ def test_recap_returns_the_stored_summary():
     assert any("puntos clave: X" in t for t in msg.texts)
 
 
+def test_recap_signs_the_summary_with_its_engines():
+    """/recap appends the transcription/summary engines, same as the original Telegram send."""
+    store.init_db()
+    run_id = store.start_run("cron")
+    store.record_file(
+        run_id, "reunion.mp4", "video", "ok", summary="puntos clave: X",
+        transcribe_backend="Groq · whisper-large-v3",
+        summarize_backend="local · Ollama test-qwen",
+    )
+    store.finish_run(run_id, "ok", 1, 1)
+
+    upd, msg = _update(int(config.TG_CHAT_IDS[0]))
+    asyncio.run(handlers.recap(upd, _ctx()))
+
+    text = "\n".join(msg.texts)
+    assert "_transcripción: Groq · whisper-large-v3_" in text
+    assert "_resumen: local · Ollama test-qwen_" in text
+
+
+def test_recap_omits_the_transcription_line_for_text_files():
+    """A text-kind file has no transcription engine, so only the summary line shows."""
+    store.init_db()
+    run_id = store.start_run("cron")
+    store.record_file(
+        run_id, "nota.txt", "text", "ok", summary="acuerdos",
+        summarize_backend="local · Ollama test-qwen",
+    )
+    store.finish_run(run_id, "ok", 1, 1)
+
+    upd, msg = _update(int(config.TG_CHAT_IDS[0]))
+    asyncio.run(handlers.recap(upd, _ctx()))
+
+    text = "\n".join(msg.texts)
+    assert "_resumen: local · Ollama test-qwen_" in text
+    assert "_transcripción:" not in text
+
+
 def test_resolve_file_by_index_and_name():
     """resolve_file maps None/digit/name to the right file rows."""
     store.init_db()

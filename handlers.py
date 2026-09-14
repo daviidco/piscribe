@@ -251,7 +251,7 @@ async def status(update, context):
 
 @authorized
 async def recap(update, context):
-    """/recap [n|archivo] — the summary of a processed file."""
+    """/recap [n|archivo] — the summary of a processed file, signed with its engine(s)."""
     row = resolve_file(context.args[0] if context.args else None)
     if not row:
         await update.message.reply_text("no encuentro ese archivo.")
@@ -263,6 +263,17 @@ async def recap(update, context):
         return
     for part in split_message(f"📋 {row['filename']}\n\n{row['summary']}"):
         await update.message.reply_text(part)
+
+    # Sent as its own message, after the summary — same reasoning as the
+    # pipeline's original delivery (see pipeline._signature_message): a long
+    # or malformed summary can't take the signature down with it.
+    sig_lines = []
+    if row["transcribe_backend"]:
+        sig_lines.append(f"_transcripción: {row['transcribe_backend']}_")
+    if row["summarize_backend"]:
+        sig_lines.append(f"_resumen: {row['summarize_backend']}_")
+    if sig_lines:
+        await update.message.reply_text("\n".join(sig_lines))
 
 
 @authorized

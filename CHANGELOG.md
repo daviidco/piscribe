@@ -9,6 +9,37 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
 
 ## [Unreleased]
 
+### Added
+
+- `/version` now shows `config.VERSION` (from the `VERSION` file) alongside
+  the git SHA and configured models.
+- `/recap` now signs the summary with which engine transcribed and
+  summarized it (e.g. `_resumen: Groq · qwen/qwen3.8-27b_`), matching the
+  signature already sent with the original Telegram delivery — previously
+  this was only visible in that original message or by reading `/logs`.
+
+### Changed
+
+- The engine signature (`_transcripción: ..._` / `_resumen: ..._`) is now
+  sent as its own Telegram message, right after the summary, instead of
+  appended to the same message — for both the original delivery and
+  `/recap`. This way a very long summary that Telegram splits into several
+  parts, or a summary whose Markdown fails to parse, can't take the
+  signature down with it; the two are independent `sendMessage` calls.
+
+### Fixed
+
+- A Groq summary from the reasoning model (`qwen/qwen3.8-27b`) could come
+  back visibly incomplete (missing entire sections) while Groq still reported
+  `finish_reason="stop"`, because its discarded chain-of-thought reasoning
+  and its visible answer draw from the same `GROQ_MAX_COMPLETION_TOKENS`
+  budget — so a response squeezed by that shared budget wasn't always
+  reported as `"length"`. `_summarize_groq` now also treats
+  `completion_tokens` landing within 95% of the configured cap as a
+  truncation (falling back to local Ollama), even when Groq's own
+  `finish_reason` claims a clean stop, and logs the finish reason and token
+  usage on every attempt for easier diagnosis.
+
 ## [1.0.0] - 2026-09-14
 
 First tagged version. Reconstructed from the project's git history rather than

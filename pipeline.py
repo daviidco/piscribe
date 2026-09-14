@@ -86,9 +86,20 @@ def _kind_of(filename):
     return "video" if Path(filename).suffix.lower() in VIDEO_EXTENSIONS else "text"
 
 
-def _signed_message(filename, summary, transcribe_backend, summarize_backend, label="Resumen"):
-    """Build the outbound Telegram text, signed with the engine(s) that produced it."""
-    lines = [f"📋 {label}: {filename}", "", summary, ""]
+def _summary_message(filename, summary, label="Resumen"):
+    """Build the outbound Telegram text for the summary itself (no signature)."""
+    return f"📋 {label}: {filename}\n\n{summary}"
+
+
+def _signature_message(transcribe_backend, summarize_backend):
+    """Build the engine-provenance text, sent as its own message after the summary.
+
+    Kept separate from the summary (rather than appended to the same text) so
+    it never rides on the same ``sendMessage`` call: a very long summary that
+    Telegram splits into several parts, or a summary whose Markdown fails to
+    parse, can't take the signature down with it.
+    """
+    lines = []
     if transcribe_backend:
         lines.append(f"_transcripción: {transcribe_backend}_")
     lines.append(f"_resumen: {summarize_backend}_")
@@ -192,9 +203,8 @@ def process_file(filename, *, source="pending", notify_stages=False, position=No
 
         stage(f"🧠 generando resumen de {filename}…")
         summary, summarize_backend = generate_summary(text)
-        send_telegram_message(
-            _signed_message(filename, summary, transcribe_backend, summarize_backend)
-        )
+        send_telegram_message(_summary_message(filename, summary))
+        send_telegram_message(_signature_message(transcribe_backend, summarize_backend))
     finally:
         local_path.unlink(missing_ok=True)
 
@@ -224,9 +234,8 @@ def _resummarize(filename):
     text = path.read_text(encoding="utf-8")
     summary, summarize_backend = generate_summary(text)
     transcribe_backend = row.get("transcribe_backend")
-    send_telegram_message(_signed_message(
-        filename, summary, transcribe_backend, summarize_backend, label="Resumen (re)"
-    ))
+    send_telegram_message(_summary_message(filename, summary, label="Resumen (re)"))
+    send_telegram_message(_signature_message(transcribe_backend, summarize_backend))
     log(f"Done: {filename}")
     return FileResult(
         filename=filename, kind=row["kind"], status="ok", transcript_path=str(path),
