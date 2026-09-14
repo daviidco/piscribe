@@ -30,7 +30,7 @@ import config
 import store
 from drive import list_pending_files
 from runlock import current_run_pid
-from telegram_api import split_message
+from telegram_api import redact, split_message
 
 log = logging.getLogger("piscribe.bot")
 
@@ -91,15 +91,6 @@ def version():
         return "unknown"
 
 
-def redact(text):
-    """Blank out any configured secret if it ever appears in outbound text."""
-    out = text or ""
-    for secret in (config.TG_TOKEN, config.GROQ_API_KEY):
-        if secret:
-            out = out.replace(secret, "***")
-    return out
-
-
 def authorized(func):
     """Ignore (and log) commands from ids outside ``TG_CHAT_IDS``."""
 
@@ -150,15 +141,24 @@ def _target_filename(context):
     return row["filename"] if row else None
 
 
-async def _spawn_and_report(update, env_extra, announce):
-    """Spawn pipeline.py (manual trigger) with ``env_extra``, then post the result."""
+async def _spawn_and_report(update, env_extra, announce=None, *, own_messages=False):
+    """Spawn pipeline.py (manual trigger) with ``env_extra``, then post the result.
+
+    ``own_messages=True`` (used by ``/run``) skips both the pre-announce and
+    the post-run report: ``run_pipeline`` posts the same start/stage/failure/
+    end messages a cron pass would, so the bot adding its own here would just
+    duplicate them. ``/retry`` and ``/resummarize`` go through
+    ``_single_file_run`` instead, which has no such messages yet, so they
+    still pass an ``announce`` and rely on the report below.
+    """
     if _pid_alive(current_run_pid()):
         last = store.last_run()
         trg = last["trigger"] if last else "?"
         await update.message.reply_text(f"⏳ run en curso ({trg}), probá en un rato.")
         return
 
-    await update.message.reply_text(announce)
+    if announce:
+        await update.message.reply_text(announce)
     env = {
         **os.environ,
         "PISCRIBE_TRIGGER": "manual",
@@ -171,6 +171,9 @@ async def _spawn_and_report(update, env_extra, announce):
         start_new_session=True, env=env,
     )
     await asyncio.get_running_loop().run_in_executor(None, proc.wait)
+
+    if own_messages:
+        return
 
     last = store.last_run()
     if last and last["status"] != "running":
@@ -367,9 +370,13 @@ async def find(update, context):
 
 @authorized
 async def run(update, context):
-    """/run [archivo] — process the pending folder now (or one pending file)."""
+    """/run [archivo] — process the pending folder now (or one pending file).
+
+    No bot-side announce/report here: pipeline.py posts the same
+    start/stage/failure/end messages a cron pass would.
+    """
     extra = {"PISCRIBE_ONLY": context.args[0]} if context.args else {}
-    await _spawn_and_report(update, extra, "▶️ ejecutando pipeline…")
+    await _spawn_and_report(update, extra, own_messages=True)
 
 
 @authorized

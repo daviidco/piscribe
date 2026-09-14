@@ -203,11 +203,17 @@ def test_run_spawns_pipeline_with_manual_env(monkeypatch):
     assert env["PISCRIBE_TRIGGER"] == "manual"
     assert env["PISCRIBE_BY"] == str(_uid())
     assert env["PISCRIBE_ONLY"] == "reunion.mp4"
-    assert any("ejecutando" in t for t in msg.texts)
+    # /run posts no announce/report of its own: pipeline.py's run_pipeline
+    # already sends the same start/stage/failure/end messages cron gets.
+    assert not msg.texts
 
 
-def test_run_report_shows_a_spanish_status_label_not_the_raw_value(monkeypatch):
-    """The post-/run report translates the DB status word (e.g. 'partial') to Spanish."""
+def test_retry_report_shows_a_spanish_status_label_not_the_raw_value(monkeypatch):
+    """The post-/retry report translates the DB status word (e.g. 'partial') to Spanish.
+
+    Unlike /run, /retry still gets its own bot-side report (it goes through
+    _single_file_run, which has no per-stage Telegram messages of its own).
+    """
     store.init_db()
     rid = store.start_run("manual")
     store.record_file(rid, "a.mp4", "video", "ok")
@@ -217,7 +223,7 @@ def test_run_report_shows_a_spanish_status_label_not_the_raw_value(monkeypatch):
     monkeypatch.setattr(handlers, "current_run_pid", lambda: None)
 
     upd, msg = _update(_uid())
-    asyncio.run(handlers.run(upd, _ctx()))
+    asyncio.run(handlers.retry(upd, _ctx()))
 
     final = msg.texts[-1]
     assert "parcial" in final

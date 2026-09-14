@@ -30,11 +30,27 @@ os.environ["GROQ_API_KEY"] = ""
 (_SANDBOX / "whisper.cpp").mkdir(parents=True, exist_ok=True)
 
 import config  # noqa: E402  pylint: disable=wrong-import-position
+import telegram_api  # noqa: E402  pylint: disable=wrong-import-position
 
 
 def pytest_unconfigure():
     """Remove the sandbox once the whole test session is done."""
     shutil.rmtree(_SANDBOX, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_telegram_calls(monkeypatch):
+    """Never let a test reach the real Telegram API, even indirectly.
+
+    ``pipeline.run_pipeline`` now sends progress messages on every trigger
+    (cron and manual), so any test that exercises it would otherwise shell
+    out to a real ``curl`` against api.telegram.org with a fake token. This
+    patches the one low-level chokepoint (``telegram_api._post``) so that
+    happens nowhere, regardless of which module's ``send_telegram_message``
+    binding gets called. A test that wants to inspect what was sent still
+    monkeypatches ``send_telegram_message`` itself, which takes precedence.
+    """
+    monkeypatch.setattr(telegram_api, "_post", lambda method, fields: None)
 
 
 @pytest.fixture(autouse=True)

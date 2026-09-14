@@ -44,7 +44,7 @@ from config import (
 from drive import download_file, list_pending_files, move_in_drive
 from runlock import RunLockBusy, run_lock
 from summary import generate_summary
-from telegram_api import send_telegram_message
+from telegram_api import redact, send_telegram_message
 from text import process_text
 from utils import log, log_error, run_log
 from video import process_video
@@ -95,6 +95,16 @@ def _signed_message(filename, summary, transcribe_backend, summarize_backend, la
     return "\n".join(lines)
 
 
+def _notify(text):
+    """Post a run-progress/result message — identical for cron and manual /run.
+
+    ``/retry`` and ``/resummarize`` don't call this: they're single-file,
+    spawned via ``_single_file_run`` rather than ``run_pipeline``, and still
+    get their own announce/report from ``handlers._spawn_and_report``.
+    """
+    send_telegram_message(text)
+
+
 def _prune_old_run_logs():
     """Delete per-run log files older than ``RUN_LOG_RETENTION_DAYS``.
 
@@ -135,7 +145,7 @@ def _record(run_id, file_result):
     )
 
 
-def process_file(filename, *, source="pending"):
+def process_file(filename, *, source="pending", notify_stages=False, position=None):
     """Fetch one file, transcribe/read it, summarize it, and send the summary.
 
     Args:
@@ -143,16 +153,28 @@ def process_file(filename, *, source="pending"):
         source: ``"pending"`` (default) — download from the pending folder and
             move it to processed; ``"processed"`` — re-fetch an already-handled
             file (used by ``retry``), leaving Drive untouched.
+        notify_stages: If true, post a short Telegram message before each
+            stage (download, transcription, summary) — set by ``run_pipeline``
+            for both cron and manual ``/run`` passes.
+        position: Optional ``(index, total)``, 1-based, appended to stage
+            messages so a multi-file run reads as "(2/5)" and so on.
 
     Returns:
         A successful :class:`FileResult`.
     """
     started = time.monotonic()
     log(f"Processing: {filename} (source={source})")
+    tag = f" ({position[0]}/{position[1]})" if position else ""
+
+    def stage(text):
+        if notify_stages:
+            send_telegram_message(f"{text}{tag}")
+
     local_path = LOCAL_DIR / filename
     kind = _kind_of(filename)
     transcript = TRANSCRIPTIONS_DIR / f"{Path(filename).stem}.txt"
 
+    stage(f"⬇️ descargando {filename}…")
     if source == "pending":
         download_file(filename, LOCAL_DIR)
         move_in_drive(filename)
@@ -162,11 +184,13 @@ def process_file(filename, *, source="pending"):
     transcribe_backend = None
     try:
         if kind == "video":
+            stage(f"🎙️ transcribiendo {filename}…")
             text, transcribe_backend = process_video(filename, local_path)
         else:
             text = process_text(local_path)
             transcript.write_text(text, encoding="utf-8")
 
+        stage(f"🧠 generando resumen de {filename}…")
         summary, summarize_backend = generate_summary(text)
         send_telegram_message(
             _signed_message(filename, summary, transcribe_backend, summarize_backend)
@@ -271,6 +295,7 @@ def run_pipeline(trigger, requested_by=None, only=None):
     with run_log(log_path):
         if PAUSE_FLAG.exists():
             log(f"Run {run_id}: pipeline is paused ({PAUSE_FLAG}); skipping.")
+            _notify("⏸️ pipeline en pausa; corrida omitida.")
             store.finish_run(run_id, "skipped", 0, 0)
             result.status = "skipped"
             return result
@@ -280,6 +305,7 @@ def run_pipeline(trigger, requested_by=None, only=None):
             files = list_pending_files()
         except Exception as e:  # noqa: BLE001  pylint: disable=broad-exception-caught
             log_error(f"listing pending files: {e}")
+            _notify(f"❌ no pude listar Drive: {redact(str(e))}.")
             store.finish_run(run_id, "error", 0, 0, error=str(e))
             result.status = "error"
             result.error = str(e)
@@ -289,21 +315,31 @@ def run_pipeline(trigger, requested_by=None, only=None):
             files = [f for f in files if f == only]
             if not files:
                 log_error(f"Run {run_id}: '{only}' is not in the pending folder.")
+                _notify(f"❌ '{only}' no está en la carpeta pendiente de Drive.")
                 store.finish_run(run_id, "error", 0, 0, error=f"{only} not pending")
                 result.status = "error"
                 return result
 
         if not files:
             log("No new files.")
+            _notify("🚀 sin archivos pendientes.")
             store.finish_run(run_id, "ok", 0, 0)
             return result
 
+        _notify(f"🚀 iniciando: {len(files)} archivo(s) pendiente(s).")
+
         try:
-            for filename in files:
+            for index, filename in enumerate(files, start=1):
                 try:
-                    file_result = process_file(filename)
+                    file_result = process_file(
+                        filename, notify_stages=True, position=(index, len(files))
+                    )
                 except Exception as e:  # noqa: BLE001  pylint: disable=broad-exception-caught
                     log_error(f"processing {filename}: {e}")
+                    _notify(
+                        f"❌ error procesando {filename} ({index}/{len(files)}): "
+                        f"{redact(str(e))}"
+                    )
                     file_result = FileResult(
                         filename=filename, kind=_kind_of(filename), status="error", error=str(e)
                     )
@@ -311,6 +347,7 @@ def run_pipeline(trigger, requested_by=None, only=None):
                 _record(run_id, file_result)
         except KeyboardInterrupt:
             log(f"Run {run_id}: cancelled.")
+            _notify(f"🛑 corrida cancelada ({result.files_ok}/{len(files)} completados).")
             store.finish_run(run_id, "cancelled", len(result.files), result.files_ok)
             result.status = "cancelled"
             return result
@@ -320,6 +357,8 @@ def run_pipeline(trigger, requested_by=None, only=None):
         result.status = "ok" if ok == total else ("partial" if ok else "error")
         store.finish_run(run_id, result.status, total, ok)
         log(f"Run {run_id} finished: {ok}/{total} ok ({result.status}).")
+        icon = "✅" if ok == total else ("❌" if ok == 0 else "⚠️")
+        _notify(f"{icon} corrida finalizada: {ok}/{total} ok.")
 
     return result
 

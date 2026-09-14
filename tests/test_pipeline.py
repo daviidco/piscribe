@@ -169,8 +169,10 @@ def test_main_continues_after_one_file_fails(monkeypatch, read_log):
     """One failing file is logged, the batch continues, and the run is recorded."""
     monkeypatch.setattr(pipeline, "list_pending_files", lambda: ["bad.txt", "good.txt"])
     handled = []
+    sent = []
+    monkeypatch.setattr(pipeline, "send_telegram_message", sent.append)
 
-    def fake_process(name):
+    def fake_process(name, **_kwargs):
         """Fake process_file that fails only for bad.txt."""
         handled.append(name)
         if name == "bad.txt":
@@ -189,10 +191,18 @@ def test_main_continues_after_one_file_fails(monkeypatch, read_log):
     assert last["status"] == "partial"
     assert (last["files_ok"], last["files_total"]) == (1, 2)
 
+    # An immediate failure notice plus start/end messages — same for cron and
+    # manual /run, see _notify.
+    assert any("bad.txt" in m and "kaboom" in m for m in sent)
+    assert any("iniciando" in m for m in sent)
+    assert any("finalizada" in m and "1/2" in m for m in sent)
+
 
 @pytest.mark.usefixtures("work_dirs")
 def test_main_logs_listing_failure_without_traceback(monkeypatch, read_log):
     """A failure while listing the pending folder is logged, not raised."""
+    sent = []
+    monkeypatch.setattr(pipeline, "send_telegram_message", sent.append)
 
     def boom():
         """Fake list_pending_files that fails as if rclone were missing."""
@@ -204,6 +214,7 @@ def test_main_logs_listing_failure_without_traceback(monkeypatch, read_log):
 
     assert "ERROR listing pending files" in read_log()
     assert store.last_run()["status"] == "error"
+    assert any("rclone" in m for m in sent)  # cron is told listing failed, too
 
 
 @pytest.mark.usefixtures("work_dirs")
@@ -230,7 +241,7 @@ def test_run_pipeline_only_filters_to_one_pending_file(monkeypatch):
     monkeypatch.setattr(pipeline, "list_pending_files", lambda: ["a.txt", "b.txt"])
     seen = []
 
-    def fake_process(name):
+    def fake_process(name, **_kwargs):
         seen.append(name)
         return pipeline.FileResult(filename=name, kind="text", status="ok")
 
@@ -307,7 +318,7 @@ def test_run_pipeline_marks_cancelled_on_sigterm(monkeypatch):
     """A KeyboardInterrupt mid-batch (SIGTERM) finishes the run as 'cancelled'."""
     monkeypatch.setattr(pipeline, "list_pending_files", lambda: ["x.txt"])
 
-    def boom(_name):
+    def boom(_name, **_kwargs):
         raise KeyboardInterrupt()
 
     monkeypatch.setattr(pipeline, "process_file", boom)
@@ -316,3 +327,102 @@ def test_run_pipeline_marks_cancelled_on_sigterm(monkeypatch):
 
     assert result.status == "cancelled"
     assert store.last_run()["status"] == "cancelled"
+
+
+@pytest.mark.usefixtures("work_dirs")
+def test_run_pipeline_cron_notifies_on_cancel(monkeypatch):
+    """A run cancelled mid-batch (e.g. via /cancel) tells Telegram."""
+    monkeypatch.setattr(pipeline, "list_pending_files", lambda: ["x.txt"])
+    sent = []
+    monkeypatch.setattr(pipeline, "send_telegram_message", sent.append)
+
+    def boom(_name, **_kwargs):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(pipeline, "process_file", boom)
+
+    result = pipeline.run_pipeline("cron")
+
+    assert result.status == "cancelled"
+    assert any("cancelada" in m for m in sent)
+
+
+@pytest.mark.usefixtures("work_dirs")
+def test_run_pipeline_cron_notifies_when_no_pending_files(monkeypatch):
+    """An empty cron pass still pings Telegram, so silence never means 'stuck'."""
+    monkeypatch.setattr(pipeline, "list_pending_files", list)
+    sent = []
+    monkeypatch.setattr(pipeline, "send_telegram_message", sent.append)
+
+    result = pipeline.run_pipeline("cron")
+
+    assert result.status == "ok"
+    assert any("sin archivos pendientes" in m for m in sent)
+
+
+@pytest.mark.usefixtures("work_dirs")
+def test_run_pipeline_notifies_when_paused(monkeypatch):
+    """A run that hits the pause flag tells Telegram it was skipped, not just the log."""
+    pipeline.PAUSE_FLAG.parent.mkdir(parents=True, exist_ok=True)
+    pipeline.PAUSE_FLAG.touch()
+    sent = []
+    monkeypatch.setattr(pipeline, "send_telegram_message", sent.append)
+
+    result = pipeline.run_pipeline("cron")
+
+    assert result.status == "skipped"
+    assert any("pausa" in m for m in sent)
+
+
+@pytest.mark.usefixtures("work_dirs")
+def test_run_pipeline_notifies_when_only_target_is_not_pending(monkeypatch):
+    """/run <file> for a file that isn't actually pending reports back, not just logs."""
+    monkeypatch.setattr(pipeline, "list_pending_files", lambda: ["other.txt"])
+    sent = []
+    monkeypatch.setattr(pipeline, "send_telegram_message", sent.append)
+
+    result = pipeline.run_pipeline("manual", only="missing.txt")
+
+    assert result.status == "error"
+    assert any("missing.txt" in m for m in sent)
+
+
+@pytest.mark.usefixtures("work_dirs")
+def test_run_pipeline_manual_trigger_gets_the_same_notifications_as_cron(monkeypatch):
+    """A manual /run posts the same start/failure/end messages a cron pass would.
+
+    pipeline.py no longer distinguishes triggers for these; the bot skips its
+    own announce/report for /run specifically to avoid duplicating them (see
+    handlers.run / handlers._spawn_and_report).
+    """
+    monkeypatch.setattr(pipeline, "list_pending_files", lambda: ["a.txt", "bad.txt"])
+    sent = []
+    monkeypatch.setattr(pipeline, "send_telegram_message", sent.append)
+
+    def fake_process(name, **_kwargs):
+        if name == "bad.txt":
+            raise RuntimeError("kaboom")
+        return pipeline.FileResult(filename=name, kind="text", status="ok")
+
+    monkeypatch.setattr(pipeline, "process_file", fake_process)
+
+    pipeline.run_pipeline("manual")
+
+    assert any("iniciando" in m for m in sent)
+    assert any("bad.txt" in m and "kaboom" in m for m in sent)
+    assert any("finalizada" in m and "1/2" in m for m in sent)
+
+
+def test_process_file_notify_stages_reports_each_stage_with_position(
+    work_dirs, stub_pipeline
+):
+    """notify_stages posts a download/transcribe/summary message per file, tagged."""
+    note = work_dirs.LOCAL_DIR / "nota.txt"
+    note.write_text("contenido", encoding="utf-8")
+
+    pipeline.process_file("nota.txt", notify_stages=True, position=(2, 3))
+
+    stages = stub_pipeline[:-1]  # last entry is the final signed summary
+    assert any("descargando" in m and "(2/3)" in m for m in stages)
+    assert any("generando resumen" in m and "(2/3)" in m for m in stages)
+    assert not any("transcribiendo" in m for m in stages)  # text file, no transcription stage

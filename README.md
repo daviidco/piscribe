@@ -36,6 +36,12 @@ On each run it:
 6. Cleans up the local download, archives the transcript, records the run (and
    which engine handled each stage) in a SQLite history, and writes a per-run log.
 
+Each stage above also pings Telegram — the run starting, each file's
+download/transcription/summary step, and a wrap-up with the ok/total count —
+the same whether the run came from cron or from `/run`, so a failure is never
+silent. (`/retry` and `/resummarize` are the exception: being single-file,
+they still get a simpler announce-then-result message from the bot instead.)
+
 Groq is entirely optional: leave `GROQ_API_KEY` blank in `.env` and every run
 uses the local `whisper.cpp` / Ollama stack only, with nothing leaving the host.
 A separate long-polling bot (`bot.py`) answers `/status`, `/recap`,
@@ -54,6 +60,10 @@ A separate long-polling bot (`bot.py`) answers `/status`, `/recap`,
 - **Idempotent processing** — files are moved to a processed folder as soon as they
   are picked up.
 - **Resilient batch runs** — a failure on one file is logged and does not stop the rest.
+- **Live progress on Telegram** — every `run_pipeline` pass (cron or `/run`)
+  announces the run starting, each file's stage (download/transcribe/summarize),
+  and a wrap-up; a failed file is reported immediately, not just discovered
+  later via `/status`.
 - **Single-run lock** — cron and a bot `/run` can never overlap (`flock`).
 - **Run history** in SQLite plus a per-run log file, queryable from Telegram.
 - **UTC, level-aware logging** (`INFO`/`WARNING`/`ERROR`) to stdout, the rotating

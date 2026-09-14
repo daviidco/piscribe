@@ -8,12 +8,26 @@ which owns the inbound long-polling side with ``python-telegram-bot``. Named
 import re
 import subprocess
 
+import config
 from config import TG_CHAT_IDS, TG_TOKEN
 from utils import log_warning
 
 # Telegram rejects a sendMessage text longer than 4096 UTF-16 code units; stay
 # safely under that so long summaries are split instead of dropped.
 TELEGRAM_MAX_CHARS = 4000
+
+
+def redact(text):
+    """Blank out any configured secret if it ever appears in outbound text.
+
+    Reads secrets off the ``config`` module (not as bound names) so tests can
+    monkeypatch ``config.GROQ_API_KEY``/``config.TG_TOKEN`` and have it apply.
+    """
+    out = text or ""
+    for secret in (config.TG_TOKEN, config.GROQ_API_KEY):
+        if secret:
+            out = out.replace(secret, "***")
+    return out
 
 
 def split_message(text, limit=TELEGRAM_MAX_CHARS):
@@ -53,7 +67,7 @@ def send_telegram_message(text):
     Args:
         text: The message body. Sent with ``parse_mode=Markdown``.
     """
-    tg_text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
+    tg_text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', redact(text))
     for part in split_message(tg_text):
         _post("sendMessage", [("parse_mode", "Markdown"), ("text", part)])
 
