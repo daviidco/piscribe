@@ -16,7 +16,7 @@ from config import (
     GROQ_TIMEOUT_SECONDS,
     QWEN_MODEL,
 )
-from utils import log
+from utils import log, log_warning
 
 # The prompt's wording/line lengths are content, not code — kept verbatim.
 # pylint: disable-next=line-too-long
@@ -201,7 +201,7 @@ def generate_summary(text):
             log("Groq summary succeeded.")
             return summary, f"Groq · {GROQ_MODEL}"
         except Exception as e:  # noqa: BLE001  pylint: disable=broad-exception-caught
-            log(f"Groq summary failed ({e}); falling back to local Ollama.")
+            log_warning(f"Groq summary failed ({e}); falling back to local Ollama.")
 
     log(f"Generating summary with local Ollama ({QWEN_MODEL})...")
     local_prompt = _PROMPT_TEMPLATE.format(text=text)

@@ -38,6 +38,10 @@ RUN_LOG_DIR = _path_env("RUN_LOG_DIR", WHISPER_DIR / "runs")
 LOCK_PATH = _path_env("LOCK_PATH", WHISPER_DIR / "piscribe.lock")
 PAUSE_FLAG = _path_env("PAUSE_FLAG", WHISPER_DIR / "piscribe.paused")
 DEADMAN_HOURS = float(os.environ.get("DEADMAN_HOURS", "5"))
+# Per-run log files older than this are pruned at the start of each run (see
+# pipeline._prune_old_run_logs); the shared LOG_FILE rotates by size instead
+# (see utils.py) and DB_PATH is not pruned at all.
+RUN_LOG_RETENTION_DAYS = int(os.environ.get("RUN_LOG_RETENTION_DAYS", "30"))
 
 QWEN_MODEL = os.environ["QWEN_MODEL"]
 RCLONE_REMOTE = os.environ["RCLONE_REMOTE"]

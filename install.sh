@@ -111,7 +111,11 @@ trap - EXIT
 
 # --- Step 6/6: schedule the cron job ----------------------------------------
 echo "==> Step 6/6: scheduling the cron job (Mon-Fri, 10:00-16:00, every 2h)"
-cron_line="0 10-17/2 * * 1-5 cd $REPO_DIR && $VENV_DIR/bin/python pipeline.py >> $WHISPER_DIR/cron.log 2>&1 # piscribe"
+# stdout is discarded: every line pipeline.py prints already lands in
+# ~/whisper.cpp/log.txt and the run's own log file (see utils.py). Only
+# stderr goes to cron.log, as a safety net for crashes that happen outside
+# that logging (e.g. an ImportError before it's even configured).
+cron_line="0 10-17/2 * * 1-5 cd $REPO_DIR && $VENV_DIR/bin/python pipeline.py >/dev/null 2>>$WHISPER_DIR/cron.log # piscribe"
 if command -v crontab >/dev/null 2>&1; then
     { crontab -l 2>/dev/null | grep -Fv '# piscribe' || true; echo "$cron_line"; } | crontab -
     echo "    installed: $cron_line"

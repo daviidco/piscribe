@@ -16,6 +16,7 @@ import asyncio
 import io
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -32,6 +33,29 @@ from runlock import current_run_pid
 from telegram_api import split_message
 
 log = logging.getLogger("piscribe.bot")
+
+# Spanish labels for the raw run/file status values stored in the DB, so they
+# never leak into an outbound message as bare English words.
+_STATUS_LABELS = {
+    "ok": "completado",
+    "partial": "parcial",
+    "error": "error",
+    "cancelled": "cancelado",
+    "skipped": "omitido",
+    "running": "en curso",
+}
+
+
+def _status_label(raw_status):
+    """Spanish display label for a raw run/file status value."""
+    return _STATUS_LABELS.get(raw_status, raw_status)
+
+
+# Matches utils.LOG_FORMAT's "[<timestamp>] LEVEL message" — anchored to the
+# level field itself, not a loose substring, so a normal message that happens
+# to contain the word "error" doesn't false-positive in /logs errors.
+_LOG_LEVEL_RE = re.compile(r"^\[[^\]]*\]\s+(WARNING|ERROR)\b")
+
 
 HELP_TEXT = (
     "piscribe control bot\n\n"
@@ -68,8 +92,12 @@ def version():
 
 
 def redact(text):
-    """Blank out the bot token if it ever appears in outbound text."""
-    return (text or "").replace(config.TG_TOKEN, "***")
+    """Blank out any configured secret if it ever appears in outbound text."""
+    out = text or ""
+    for secret in (config.TG_TOKEN, config.GROQ_API_KEY):
+        if secret:
+            out = out.replace(secret, "***")
+    return out
 
 
 def authorized(func):
@@ -146,7 +174,11 @@ async def _spawn_and_report(update, env_extra, announce):
 
     last = store.last_run()
     if last and last["status"] != "running":
-        msg = f"✅ run #{last['id']}: {last['status']} ({last['files_ok']}/{last['files_total']})"
+        icon = "✅" if last["status"] == "ok" else "⚠️"
+        msg = (
+            f"{icon} run #{last['id']}: {_status_label(last['status'])} "
+            f"({last['files_ok']}/{last['files_total']})"
+        )
         if last["error"]:
             msg += f"\n{redact(last['error'])}"
     else:
@@ -169,15 +201,21 @@ async def whoami(update, context):
     user = update.effective_user
     chat = update.effective_chat
     await update.message.reply_text(
-        f"user id: {user.id}\nchat id: {chat.id}\nusername: @{user.username}"
-        if user else "no user in update"
+        f"id de usuario: {user.id}\nid de chat: {chat.id}\nusuario: @{user.username}"
+        if user else "no hay usuario en este update"
     )
 
 
 @authorized
 async def version_cmd(update, context):
-    """/version — checkout SHA and configured model."""
-    await update.message.reply_text(f"piscribe {version()}\nmodelo: {config.QWEN_MODEL}")
+    """/version — checkout SHA and every configured model (cloud + local)."""
+    lines = [f"piscribe {version()}", f"resumen local: Ollama {config.QWEN_MODEL}"]
+    if config.GROQ_API_KEY:
+        lines.append(f"resumen: Groq · {config.GROQ_MODEL}")
+        lines.append(f"transcripción: Groq · {config.GROQ_WHISPER_MODEL}")
+    else:
+        lines.append("Groq: desactivado (sin GROQ_API_KEY)")
+    await update.message.reply_text("\n".join(lines))
 
 
 @authorized
@@ -254,7 +292,7 @@ async def logs(update, context):
         return
     text = redact(path.read_text(encoding="utf-8", errors="replace"))
     if only_errors:
-        hits = [ln for ln in text.splitlines() if "ERROR" in ln or "WARNING" in ln]
+        hits = [ln for ln in text.splitlines() if _LOG_LEVEL_RE.match(ln)]
         for part in split_message("\n".join(hits) or "(sin errores ni advertencias)"):
             await update.message.reply_text(part)
         return
@@ -386,7 +424,7 @@ async def pause(update, context):
     """/pause — runs record as 'skipped' until /resume."""
     config.PAUSE_FLAG.parent.mkdir(parents=True, exist_ok=True)
     config.PAUSE_FLAG.touch()
-    await update.message.reply_text("⏸️ pipeline en pausa. Los runs quedarán como 'skipped'.")
+    await update.message.reply_text("⏸️ pipeline en pausa. Las corridas van a quedar omitidas.")
 
 
 @authorized

@@ -9,7 +9,7 @@ import re
 import subprocess
 
 from config import TG_CHAT_IDS, TG_TOKEN
-from utils import log
+from utils import log_warning
 
 # Telegram rejects a sendMessage text longer than 4096 UTF-16 code units; stay
 # safely under that so long summaries are split instead of dropped.
@@ -41,7 +41,7 @@ def _post(method, fields):
             args += ["-F", f"{key}={value}"]
         result = subprocess.run(args, capture_output=True, text=True, check=False)
         if '"ok":true' not in result.stdout:
-            log(f"WARNING: possible error calling {method} for {chat_id}: {result.stdout}")
+            log_warning(f"possible error calling {method} for {chat_id}: {result.stdout}")
 
 
 def send_telegram_message(text):

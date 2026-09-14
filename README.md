@@ -56,7 +56,9 @@ A separate long-polling bot (`bot.py`) answers `/status`, `/recap`,
 - **Resilient batch runs** — a failure on one file is logged and does not stop the rest.
 - **Single-run lock** — cron and a bot `/run` can never overlap (`flock`).
 - **Run history** in SQLite plus a per-run log file, queryable from Telegram.
-- **Timestamped logging** to stdout, `~/whisper.cpp/log.txt`, and the run's own log.
+- **UTC, level-aware logging** (`INFO`/`WARNING`/`ERROR`) to stdout, the rotating
+  `~/whisper.cpp/log.txt`, and the run's own log file (auto-pruned after
+  `RUN_LOG_RETENTION_DAYS`, default 30).
 
 ## Project layout
 
@@ -183,7 +185,7 @@ cd ~/piscribe && .venv/bin/python pipeline.py
 `install.sh` installs this cron entry — **Mon–Fri, 10:00–16:00, every 2 hours**:
 
 ```cron
-0 10-17/2 * * 1-5 cd /home/pi/piscribe && /home/pi/piscribe/.venv/bin/python pipeline.py >> ~/whisper.cpp/cron.log 2>&1 # piscribe
+0 10-17/2 * * 1-5 cd /home/pi/piscribe && /home/pi/piscribe/.venv/bin/python pipeline.py >/dev/null 2>>~/whisper.cpp/cron.log # piscribe
 ```
 
 Edit the schedule with `crontab -e`; keep the trailing `# piscribe` marker so the
@@ -308,7 +310,7 @@ graph TD
 
     M["Cron Job (L-V 10-17, cada 2h)"] -->|flock compartido| F
 
-    F -->|Registra| N["cron.log + run log"]
+    F -->|Registra| N["log.txt + run log (cron.log solo en fallo)"]
     B -->|Logs| N
 
     style A fill:#f9f,stroke:#333

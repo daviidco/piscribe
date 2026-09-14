@@ -20,7 +20,7 @@ from config import (
     WHISPER_MODEL,
 )
 from drive import run
-from utils import log
+from utils import log, log_warning
 
 
 def extract_audio(video_path, audio_path):
@@ -108,15 +108,15 @@ def _try_groq_transcription(local_path, stem):
         extract_audio_compact(local_path, compact_audio)
         size_mb = compact_audio.stat().st_size / (1024 * 1024)
         if size_mb > GROQ_MAX_AUDIO_MB:
-            log(f"Skipping Groq transcription: {size_mb:.1f} MB exceeds "
-                f"GROQ_MAX_AUDIO_MB={GROQ_MAX_AUDIO_MB}.")
+            log_warning(f"Skipping Groq transcription: {size_mb:.1f} MB exceeds "
+                        f"GROQ_MAX_AUDIO_MB={GROQ_MAX_AUDIO_MB}.")
             return None
         log(f"Transcribing with Groq ({GROQ_WHISPER_MODEL}, {size_mb:.1f} MB)...")
         text = transcribe_groq(compact_audio)
         log("Groq transcription succeeded.")
         return text
     except Exception as e:  # noqa: BLE001  pylint: disable=broad-exception-caught
-        log(f"Groq transcription failed ({e}); falling back to local whisper.cpp.")
+        log_warning(f"Groq transcription failed ({e}); falling back to local whisper.cpp.")
         return None
     finally:
         compact_audio.unlink(missing_ok=True)

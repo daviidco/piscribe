@@ -37,6 +37,7 @@ from config import (
     PAUSE_FLAG,
     PROCESSED_FOLDER,
     RUN_LOG_DIR,
+    RUN_LOG_RETENTION_DAYS,
     TRANSCRIPTIONS_DIR,
     VIDEO_EXTENSIONS,
 )
@@ -45,7 +46,7 @@ from runlock import RunLockBusy, run_lock
 from summary import generate_summary
 from telegram_api import send_telegram_message
 from text import process_text
-from utils import log, run_log
+from utils import log, log_error, run_log
 from video import process_video
 
 
@@ -94,12 +95,29 @@ def _signed_message(filename, summary, transcribe_backend, summarize_backend, la
     return "\n".join(lines)
 
 
+def _prune_old_run_logs():
+    """Delete per-run log files older than ``RUN_LOG_RETENTION_DAYS``.
+
+    ``RUN_LOG_DIR`` gets a new file every run and nothing else ever removes
+    them; this keeps the directory bounded without a separate cron job. Any
+    file that can't be removed (permissions, a race) is silently skipped.
+    """
+    cutoff = time.time() - RUN_LOG_RETENTION_DAYS * 86400
+    for path in RUN_LOG_DIR.glob("run-*.log"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError:
+            pass
+
+
 def _new_run(trigger, requested_by):
     """Make the runtime dirs, open a run row, and return (id, log_path, result)."""
     LOCAL_DIR.mkdir(parents=True, exist_ok=True)
     TRANSCRIPTIONS_DIR.mkdir(parents=True, exist_ok=True)
     RUN_LOG_DIR.mkdir(parents=True, exist_ok=True)
     store.init_db()
+    _prune_old_run_logs()
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     log_path = RUN_LOG_DIR / f"run-{stamp}-{trigger}.log"
     run_id = store.start_run(trigger, requested_by, log_path=log_path)
@@ -208,7 +226,7 @@ def _single_file_run(trigger, requested_by, filename, worker, what):
             result.status = "cancelled"
             return result
         except Exception as e:  # noqa: BLE001  pylint: disable=broad-exception-caught
-            log(f"ERROR ({what}) {filename}: {e}")
+            log_error(f"({what}) {filename}: {e}")
             file_result = FileResult(filename, _kind_of(filename), "error", error=str(e))
         result.files.append(file_result)
         _record(run_id, file_result)
@@ -261,7 +279,7 @@ def run_pipeline(trigger, requested_by=None, only=None):
         try:
             files = list_pending_files()
         except Exception as e:  # noqa: BLE001  pylint: disable=broad-exception-caught
-            log(f"ERROR listing pending files: {e}")
+            log_error(f"listing pending files: {e}")
             store.finish_run(run_id, "error", 0, 0, error=str(e))
             result.status = "error"
             result.error = str(e)
@@ -270,7 +288,7 @@ def run_pipeline(trigger, requested_by=None, only=None):
         if only is not None:
             files = [f for f in files if f == only]
             if not files:
-                log(f"Run {run_id}: '{only}' is not in the pending folder.")
+                log_error(f"Run {run_id}: '{only}' is not in the pending folder.")
                 store.finish_run(run_id, "error", 0, 0, error=f"{only} not pending")
                 result.status = "error"
                 return result
@@ -285,7 +303,7 @@ def run_pipeline(trigger, requested_by=None, only=None):
                 try:
                     file_result = process_file(filename)
                 except Exception as e:  # noqa: BLE001  pylint: disable=broad-exception-caught
-                    log(f"ERROR processing {filename}: {e}")
+                    log_error(f"processing {filename}: {e}")
                     file_result = FileResult(
                         filename=filename, kind=_kind_of(filename), status="error", error=str(e)
                     )

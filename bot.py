@@ -18,8 +18,12 @@ from telegram.ext import Application, CommandHandler
 import handlers
 import store
 from config import TG_TOKEN
+from utils import LOG_DATEFMT, LOG_FORMAT, configure_utc_formatter
 
 HEALTH_INTERVAL_SECONDS = 900
+# These log at INFO by default and would otherwise drown out real bot events
+# (every long-poll and every sendMessage) in `journalctl`.
+_QUIET_LOGGERS = ("httpx", "httpcore", "apscheduler")
 
 
 def build_app():
@@ -55,12 +59,24 @@ def build_app():
     return app
 
 
+def _configure_logging():
+    """Set up logging so a bot line reads like a pipeline line (same UTC format).
+
+    Third-party libraries that log routine traffic at INFO (every long-poll,
+    every outgoing Telegram request) are quieted to WARNING so real bot events
+    (unauthorized commands, job failures) aren't buried in `journalctl`.
+    """
+    handler = logging.StreamHandler()
+    handler.setFormatter(configure_utc_formatter())
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, datefmt=LOG_DATEFMT,
+                         handlers=[handler])
+    for name in _QUIET_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 def main():
     """Configure logging and start long polling (blocks until stopped)."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    _configure_logging()
     build_app().run_polling(allowed_updates=["message"])
 
 

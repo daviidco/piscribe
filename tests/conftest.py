@@ -39,11 +39,19 @@ def pytest_unconfigure():
 
 @pytest.fixture(autouse=True)
 def clean_state():
-    """Wipe the store, run lock, pause flag and run logs before every test."""
+    """Wipe the store, run lock, pause flag and run logs before every test.
+
+    ``config.LOG_FILE`` is truncated rather than unlinked: utils.py's
+    RotatingFileHandler opens it once at import time and keeps that file
+    descriptor for the whole test session, so deleting the path would leave
+    it writing into an unlinked inode that ``read_log()`` can never see again.
+    """
     for path in (config.DB_PATH, config.LOCK_PATH, config.PAUSE_FLAG,
-                 config.LOG_FILE, config.DB_PATH.with_suffix(".db-wal"),
+                 config.DB_PATH.with_suffix(".db-wal"),
                  config.DB_PATH.with_suffix(".db-shm")):
         Path(path).unlink(missing_ok=True)
+    if config.LOG_FILE.exists():
+        config.LOG_FILE.write_text("", encoding="utf-8")
     shutil.rmtree(config.RUN_LOG_DIR, ignore_errors=True)
     yield
 

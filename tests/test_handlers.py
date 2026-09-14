@@ -54,6 +54,41 @@ def test_redact_blanks_the_token():
     assert handlers.redact(None) == ""
 
 
+def test_redact_blanks_the_groq_key_too(monkeypatch):
+    """redact also strips GROQ_API_KEY when one is configured."""
+    monkeypatch.setattr(config, "GROQ_API_KEY", "gsk_secret123")
+    assert handlers.redact("error: gsk_secret123 invalid") == "error: *** invalid"
+
+
+def test_status_label_translates_known_values_and_passes_through_others():
+    """_status_label maps DB status words to Spanish, unknown values pass through."""
+    assert handlers._status_label("partial") == "parcial"
+    assert handlers._status_label("cancelled") == "cancelado"
+    assert handlers._status_label("skipped") == "omitido"
+    assert handlers._status_label("weird") == "weird"
+
+
+def test_whoami_uses_spanish_field_labels():
+    """/whoami answers in Spanish, not with English field names."""
+    upd, msg = _update(42)
+    asyncio.run(handlers.whoami(upd, _ctx()))
+    assert "id de usuario: 42" in msg.texts[0]
+    assert "user id" not in msg.texts[0]
+
+
+def test_version_reports_groq_status(monkeypatch):
+    """/version shows whether Groq is configured, and which models are in play."""
+    monkeypatch.setattr(config, "GROQ_API_KEY", "")
+    upd, msg = _update(_uid())
+    asyncio.run(handlers.version_cmd(upd, _ctx()))
+    assert any("desactivado" in t for t in msg.texts)
+
+    monkeypatch.setattr(config, "GROQ_API_KEY", "fake-key")
+    msg.texts.clear()
+    asyncio.run(handlers.version_cmd(upd, _ctx()))
+    assert any("Groq ·" in t for t in msg.texts)
+
+
 def test_authorized_ignores_unknown_ids():
     """A caller outside TG_CHAT_IDS gets no reply at all."""
     upd, msg = _update(999999)  # not in the "1,2" allowlist
@@ -169,6 +204,24 @@ def test_run_spawns_pipeline_with_manual_env(monkeypatch):
     assert env["PISCRIBE_BY"] == str(_uid())
     assert env["PISCRIBE_ONLY"] == "reunion.mp4"
     assert any("ejecutando" in t for t in msg.texts)
+
+
+def test_run_report_shows_a_spanish_status_label_not_the_raw_value(monkeypatch):
+    """The post-/run report translates the DB status word (e.g. 'partial') to Spanish."""
+    store.init_db()
+    rid = store.start_run("manual")
+    store.record_file(rid, "a.mp4", "video", "ok")
+    store.finish_run(rid, "partial", 2, 1)
+
+    monkeypatch.setattr(handlers.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(handlers, "current_run_pid", lambda: None)
+
+    upd, msg = _update(_uid())
+    asyncio.run(handlers.run(upd, _ctx()))
+
+    final = msg.texts[-1]
+    assert "parcial" in final
+    assert "partial" not in final
 
 
 def test_retry_resolves_a_filename_and_sets_mode(monkeypatch):
