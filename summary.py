@@ -102,6 +102,38 @@ Comprueba que:
 --- FIN DE LA TRANSCRIPCIÓN ---
 """
 
+# Groq's free tier enforces a strict output-tokens-per-minute cap (observed
+# ~1000 for qwen/qwen3.8-27b) that the detailed prompt above routinely exceeds
+# for a real meeting. This shorter prompt is used ONLY for the Groq attempt, to
+# fit a complete answer under that cap instead of triggering the truncation
+# fallback below on almost every dense meeting. Local Ollama has no such
+# per-minute limit, so it always gets the detailed prompt above instead.
+# pylint: disable-next=line-too-long
+_PROMPT_TEMPLATE_GROQ = """Analiza la transcripción que aparece al final y devuelve un resumen breve y fiel en español, en Markdown. No inventes nombres, fechas ni datos que no estén en el texto; atribuí una afirmación a alguien solo si su identidad es clara por nombre o contexto. Si algo no se puede determinar con seguridad, omitilo — no lo adivines.
+
+Sé conciso: máximo 3-4 viñetas por sección, sin relleno ni repetición.
+
+## Resumen
+1-2 párrafos cortos: propósito de la reunión y resultado general.
+
+## Puntos clave
+- Lo más importante tratado, con el hablante si se sabe.
+
+## Decisiones
+- Solo decisiones confirmadas (no propuestas ni dudas).
+
+## Compromisos
+- Acción — responsable — plazo (si consta).
+
+## Pendientes
+- Temas abiertos o próximos pasos.
+
+Transcripción:
+--- INICIO ---
+{text}
+--- FIN ---
+"""
+
 
 def _summarize_local(prompt):
     """Summarize with the local Qwen model via Ollama."""
@@ -144,14 +176,15 @@ def _summarize_groq(prompt):
 
 
 def generate_summary(text):
-    """Summarize a transcript into a detailed, structured Spanish summary.
+    """Summarize a transcript into a Spanish summary.
 
-    The same prompt is used for both backends: analyze the full transcript and
-    produce a Markdown summary (executive synthesis, key points, decisions,
-    commitments with owner/deadline, risks, resolved issues, open items, and
-    discrepancies), attributing statements to a speaker only when the
-    transcript makes that identifiable, and never inventing names, dates, or
-    facts not present in the text.
+    Groq gets a short, concise prompt sized to fit its free-tier output-tokens-
+    per-minute limit; local Ollama (no such limit) gets the full detailed
+    prompt (executive synthesis, key points, decisions, commitments with
+    owner/deadline, risks, resolved issues, open items, and discrepancies).
+    Both attribute statements to a speaker only when the transcript makes that
+    identifiable, and never invent names, dates, or facts not present in the
+    text.
 
     Args:
         text: The transcript (or note) to summarize; may be in any language.
@@ -160,16 +193,16 @@ def generate_summary(text):
         A ``(summary, backend_label)`` tuple, e.g. ``(summary, "Groq · qwen/qwen3.8-27b")``
         or ``(summary, "local · Ollama qwen3:1.7b")``.
     """
-    prompt = _PROMPT_TEMPLATE.format(text=text)
-
     if GROQ_API_KEY:
         try:
             log(f"Generating summary with Groq ({GROQ_MODEL})...")
-            summary = _summarize_groq(prompt)
+            groq_prompt = _PROMPT_TEMPLATE_GROQ.format(text=text)
+            summary = _summarize_groq(groq_prompt)
             log("Groq summary succeeded.")
             return summary, f"Groq · {GROQ_MODEL}"
         except Exception as e:  # noqa: BLE001  pylint: disable=broad-exception-caught
             log(f"Groq summary failed ({e}); falling back to local Ollama.")
 
     log(f"Generating summary with local Ollama ({QWEN_MODEL})...")
-    return _summarize_local(prompt), f"local · Ollama {QWEN_MODEL}"
+    local_prompt = _PROMPT_TEMPLATE.format(text=text)
+    return _summarize_local(local_prompt), f"local · Ollama {QWEN_MODEL}"

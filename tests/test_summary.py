@@ -30,9 +30,16 @@ class _FakeGroqClient:  # pylint: disable=too-few-public-methods
 
 
 def test_groq_summary_used_when_it_succeeds(monkeypatch):
-    """Groq succeeds: its text is used directly, local Ollama never runs."""
+    """Groq succeeds: its text is used directly, with the CONCISE prompt, and
+    local Ollama never runs."""
     monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
-    monkeypatch.setattr(summary, "_summarize_groq", lambda prompt: "resumen de groq")
+    seen = {}
+
+    def fake_summarize_groq(prompt):
+        seen["prompt"] = prompt
+        return "resumen de groq"
+
+    monkeypatch.setattr(summary, "_summarize_groq", fake_summarize_groq)
 
     def boom(_prompt):
         raise AssertionError("local Ollama must not run when Groq succeeds")
@@ -43,41 +50,56 @@ def test_groq_summary_used_when_it_succeeds(monkeypatch):
 
     assert text == "resumen de groq"
     assert backend == f"Groq · {summary.GROQ_MODEL}"
+    assert seen["prompt"] == summary._PROMPT_TEMPLATE_GROQ.format(text="transcripcion de prueba")
 
 
-def test_groq_failure_falls_back_to_local(monkeypatch, read_log):
-    """Any Groq exception falls back to local Ollama; the reason is logged."""
+def test_groq_failure_falls_back_to_local_with_the_detailed_prompt(monkeypatch, read_log):
+    """A Groq failure falls back to local Ollama using the ORIGINAL detailed
+    prompt (not the concise one Groq got), and the reason is logged."""
     monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
+    seen = {}
 
     def raise_rate_limit(_prompt):
         raise RuntimeError("rate_limit_exceeded")
 
+    def fake_summarize_local(prompt):
+        seen["prompt"] = prompt
+        return "resumen local"
+
     monkeypatch.setattr(summary, "_summarize_groq", raise_rate_limit)
-    monkeypatch.setattr(summary, "_summarize_local", lambda prompt: "resumen local")
+    monkeypatch.setattr(summary, "_summarize_local", fake_summarize_local)
 
     text, backend = summary.generate_summary("texto de la reunion")
 
     assert text == "resumen local"
     assert backend == f"local · Ollama {summary.QWEN_MODEL}"
+    assert seen["prompt"] == summary._PROMPT_TEMPLATE.format(text="texto de la reunion")
     log_text = read_log()
     assert "Groq summary failed" in log_text
     assert "rate_limit_exceeded" in log_text
 
 
-def test_no_api_key_skips_groq_entirely(monkeypatch):
-    """Without GROQ_API_KEY (the sandbox default) Groq is never attempted."""
+def test_no_api_key_skips_groq_and_uses_the_detailed_prompt(monkeypatch):
+    """Without GROQ_API_KEY (the sandbox default), Groq is never attempted and
+    local gets the original detailed prompt."""
     assert summary.GROQ_API_KEY == ""
+    seen = {}
 
     def boom(_prompt):
         raise AssertionError("Groq must not run without an API key")
 
+    def fake_summarize_local(prompt):
+        seen["prompt"] = prompt
+        return "resumen local"
+
     monkeypatch.setattr(summary, "_summarize_groq", boom)
-    monkeypatch.setattr(summary, "_summarize_local", lambda prompt: "resumen local")
+    monkeypatch.setattr(summary, "_summarize_local", fake_summarize_local)
 
     text, backend = summary.generate_summary("texto")
 
     assert text == "resumen local"
     assert backend.startswith("local ·")
+    assert seen["prompt"] == summary._PROMPT_TEMPLATE.format(text="texto")
 
 
 def test_summarize_groq_returns_content_on_a_normal_finish(monkeypatch):
@@ -105,23 +127,41 @@ def test_summarize_groq_raises_when_truncated_by_the_token_cap(monkeypatch):
 
 
 def test_truncated_groq_response_falls_back_to_local(monkeypatch, read_log):
-    """generate_summary falls back to local when Groq's answer got cut short."""
+    """generate_summary falls back to local, with the detailed prompt, when
+    Groq's answer got cut short."""
     monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
     monkeypatch.setattr(
         summary, "Groq", lambda **_kw: _FakeGroqClient("resumen a medi", "length")
     )
-    monkeypatch.setattr(summary, "_summarize_local", lambda prompt: "resumen local completo")
+    seen = {}
+
+    def fake_summarize_local(prompt):
+        seen["prompt"] = prompt
+        return "resumen local completo"
+
+    monkeypatch.setattr(summary, "_summarize_local", fake_summarize_local)
 
     text, backend = summary.generate_summary("texto de la reunion")
 
     assert text == "resumen local completo"
     assert backend == f"local · Ollama {summary.QWEN_MODEL}"
+    assert seen["prompt"] == summary._PROMPT_TEMPLATE.format(text="texto de la reunion")
     assert "truncat" in read_log()
 
 
-def test_prompt_template_carries_the_transcript_and_the_spanish_instruction():
-    """Sanity check: both backends share the same structured Spanish prompt."""
+def test_detailed_prompt_template_carries_the_transcript_and_the_spanish_instruction():
+    """Sanity check on the detailed prompt (local Ollama only)."""
     prompt = summary._PROMPT_TEMPLATE.format(text="HOLA_MUNDO_UNICO")
     assert "HOLA_MUNDO_UNICO" in prompt
     assert "Usa Markdown claro, profesional y español" in prompt
     assert "No inventes información" in prompt
+
+
+def test_groq_prompt_template_is_short_and_capped():
+    """Sanity check on the concise prompt (Groq only): shorter, capped output,
+    same anti-hallucination rule, and distinct from the detailed one."""
+    prompt = summary._PROMPT_TEMPLATE_GROQ.format(text="HOLA_MUNDO_UNICO")
+    assert "HOLA_MUNDO_UNICO" in prompt
+    assert "máximo 3-4 viñetas por sección" in prompt
+    assert "no lo adivines" in prompt
+    assert len(summary._PROMPT_TEMPLATE_GROQ) < len(summary._PROMPT_TEMPLATE)
