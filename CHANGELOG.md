@@ -32,16 +32,21 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
 - Both prompts now explicitly require ticket numbers to be written as one
   whole 4-digit number (e.g. `3619`), never split with a dot or a slash
   (`36.19`, `36/19`) — observed in a real summary.
-- A Groq summary from the reasoning model (`qwen/qwen3.8-27b`) could come
-  back visibly incomplete (missing entire sections) while Groq still reported
-  `finish_reason="stop"`, because its discarded chain-of-thought reasoning
-  and its visible answer draw from the same `GROQ_MAX_COMPLETION_TOKENS`
-  budget — so a response squeezed by that shared budget wasn't always
-  reported as `"length"`. `_summarize_groq` now also treats
-  `completion_tokens` landing within 95% of the configured cap as a
-  truncation (falling back to local Ollama), even when Groq's own
-  `finish_reason` claims a clean stop, and logs the finish reason and token
-  usage on every attempt for easier diagnosis.
+- A Groq summary could come back visibly incomplete (missing entire sections)
+  while Groq reported everything as normal. `_summarize_groq` now checks two
+  independent signals instead of trusting `finish_reason` alone:
+  - `completion_tokens` landing within 95% of `GROQ_MAX_COMPLETION_TOKENS`
+    is treated as truncated even when `finish_reason="stop"` (the reasoning
+    trace and the visible answer share one budget, so a squeezed answer
+    isn't always reported as `"length"`).
+  - The response is required to contain all five section headers the Groq
+    prompt asks for; if one is missing, it's treated as incomplete and
+    falls back to local Ollama. This is the one that actually caught the
+    real production case — logs showed `finish_reason='stop'` with only
+    510/8192 tokens used (plenty of budget left), so no token-based check
+    could have caught it: the model was simply skipping sections on its own.
+  Every attempt now logs its `finish_reason` and `completion_tokens` too,
+  for easier diagnosis via `/logs`.
 
 ## [1.0.0] - 2026-09-14
 

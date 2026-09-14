@@ -37,6 +37,14 @@ class _FakeGroqClient:  # pylint: disable=too-few-public-methods
         )
 
 
+# A response with every section _summarize_groq requires present — the
+# baseline "this is a complete answer" fixture for tests that aren't
+# specifically exercising the missing-section check.
+_COMPLETE_GROQ_RESPONSE = "\n\n".join(
+    f"{header}\ncontenido" for header in summary._GROQ_REQUIRED_HEADERS
+)
+
+
 def test_groq_summary_used_when_it_succeeds(monkeypatch):
     """Groq succeeds: its text is used directly, with the CONCISE prompt, and
     local Ollama never runs."""
@@ -111,13 +119,33 @@ def test_no_api_key_skips_groq_and_uses_the_detailed_prompt(monkeypatch):
 
 
 def test_summarize_groq_returns_content_on_a_normal_finish(monkeypatch):
-    """_summarize_groq returns the text when the model finished normally."""
+    """_summarize_groq returns the text when the model finished normally
+    and included every required section."""
     monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
     monkeypatch.setattr(
-        summary, "Groq", lambda **_kw: _FakeGroqClient("resumen completo", "stop")
+        summary, "Groq", lambda **_kw: _FakeGroqClient(_COMPLETE_GROQ_RESPONSE, "stop")
     )
 
-    assert summary._summarize_groq("prompt") == "resumen completo"
+    assert summary._summarize_groq("prompt") == _COMPLETE_GROQ_RESPONSE
+
+
+def test_summarize_groq_raises_when_a_required_section_is_missing(monkeypatch):
+    """A clean 'stop' with plenty of unused token budget is still rejected if
+    the model skipped a required section — the real failure mode observed in
+    production: finish_reason='stop', completion_tokens far under the cap,
+    but whole sections (Decisiones, Compromisos, Pendientes) just missing."""
+    monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
+    incomplete = "## Resumen\ntexto\n\n## Puntos clave\n- un punto"
+    monkeypatch.setattr(
+        summary, "Groq", lambda **_kw: _FakeGroqClient(incomplete, "stop", 510),
+    )
+
+    try:
+        summary._summarize_groq("prompt")
+        raise AssertionError("expected a RuntimeError for a response missing sections")
+    except RuntimeError as e:
+        assert "truncat" in str(e)
+        assert "Decisiones" in str(e)
 
 
 def test_summarize_groq_raises_when_truncated_by_the_token_cap(monkeypatch):
@@ -154,15 +182,15 @@ def test_summarize_groq_raises_when_completion_tokens_land_near_the_cap(monkeypa
 
 
 def test_summarize_groq_accepts_a_short_answer_well_under_the_cap(monkeypatch):
-    """A short but genuinely complete answer (low completion_tokens) is not
-    penalized just for being short."""
+    """A short but genuinely complete answer (low completion_tokens, every
+    required section present) is not penalized just for being short."""
     monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
     monkeypatch.setattr(
         summary, "Groq",
-        lambda **_kw: _FakeGroqClient("## Resumen\ncorto pero completo", "stop", 50),
+        lambda **_kw: _FakeGroqClient(_COMPLETE_GROQ_RESPONSE, "stop", 50),
     )
 
-    assert summary._summarize_groq("prompt") == "## Resumen\ncorto pero completo"
+    assert summary._summarize_groq("prompt") == _COMPLETE_GROQ_RESPONSE
 
 
 def test_truncated_groq_response_falls_back_to_local(monkeypatch, read_log):
@@ -196,6 +224,26 @@ def test_near_cap_groq_response_falls_back_to_local_even_with_a_clean_stop(monke
     monkeypatch.setattr(
         summary, "Groq",
         lambda **_kw: _FakeGroqClient("## Resumen\ncorto", "stop", near_cap_tokens),
+    )
+    monkeypatch.setattr(summary, "_summarize_local", lambda _prompt: "resumen local completo")
+
+    text, backend = summary.generate_summary("texto de la reunion")
+
+    assert text == "resumen local completo"
+    assert backend == f"local · Ollama {summary.QWEN_MODEL}"
+    assert "truncat" in read_log()
+
+
+def test_groq_response_missing_a_section_falls_back_to_local(monkeypatch, read_log):
+    """generate_summary falls back to local when Groq's answer is missing a
+    required section, even with tokens to spare and a clean 'stop' — the
+    actual failure mode seen in production (log showed finish_reason='stop',
+    completion_tokens=510/8192, yet Decisiones/Compromisos/Pendientes were
+    all missing from the delivered summary)."""
+    monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
+    incomplete = "## Resumen\ntexto\n\n## Puntos clave\n- un punto"
+    monkeypatch.setattr(
+        summary, "Groq", lambda **_kw: _FakeGroqClient(incomplete, "stop", 510),
     )
     monkeypatch.setattr(summary, "_summarize_local", lambda _prompt: "resumen local completo")
 

@@ -119,6 +119,11 @@ Los números de ticket son números enteros de 4 dígitos (ej. 3619). Escríbelo
 siempre completos y juntos, sin puntos, espacios ni barras — nunca "36.19",
 "36/19" ni "36 19".
 
+Incluí SIEMPRE los cinco encabezados de abajo, exactamente en ese orden y con
+ese texto, aunque una sección no tenga contenido en la transcripción — en ese
+caso escribí una sola línea "Sin información en la transcripción." debajo del
+encabezado. Nunca omitas un encabezado.
+
 ## Resumen
 1-2 párrafos cortos: propósito de la reunión y resultado general.
 
@@ -139,6 +144,15 @@ Transcripción:
 {text}
 --- FIN ---
 """
+
+# generate_summary treats a response missing any of these as incomplete (see
+# _summarize_groq) — the prompt above requires the model to always emit all
+# five, even as a "sin información" placeholder, so a missing header reliably
+# means the model didn't follow instructions or got cut off, not that the
+# section legitimately had nothing to say.
+_GROQ_REQUIRED_HEADERS = (
+    "## Resumen", "## Puntos clave", "## Decisiones", "## Compromisos", "## Pendientes",
+)
 
 
 def _summarize_local(prompt):
@@ -165,18 +179,22 @@ def _summarize_groq(prompt):
     final answer; any reasoning trace the model produces goes to
     ``message.reasoning`` and is discarded.
 
-    A response that looks token-capped is treated as a failure rather than
-    returned incomplete, so a dense, multi-participant meeting falls back to
-    local Ollama instead of silently delivering a truncated summary. Two
-    signals count as capped: an explicit ``finish_reason != "stop"`` (e.g.
-    ``"length"``), or ``completion_tokens`` landing within
+    A response that looks incomplete is treated as a failure rather than
+    returned as-is, so a dense, multi-participant meeting falls back to local
+    Ollama instead of silently delivering a truncated or partial summary.
+    Three signals trigger that: an explicit ``finish_reason != "stop"`` (e.g.
+    ``"length"``); ``completion_tokens`` landing within
     ``_GROQ_NEAR_CAP_RATIO`` of ``GROQ_MAX_COMPLETION_TOKENS`` even though
-    Groq reported a clean stop (see ``_GROQ_NEAR_CAP_RATIO`` above).
+    Groq reported a clean stop; or — observed in practice with plenty of
+    unused token budget and a clean ``"stop"`` — the model simply skipping one
+    of the section headers ``_GROQ_REQUIRED_HEADERS`` requires, which no
+    token-based check can catch since nothing was actually cut short.
 
     Raises:
         Exception: Any failure from the Groq client (network, timeout, rate
-            limit, context length, invalid key, truncated response, ...).
-            Callers are expected to fall back to :func:`_summarize_local`.
+            limit, context length, invalid key, truncated or incomplete
+            response, ...). Callers are expected to fall back to
+            :func:`_summarize_local`.
     """
     client = Groq(api_key=GROQ_API_KEY, timeout=GROQ_TIMEOUT_SECONDS)
     completion = client.chat.completions.create(
@@ -201,7 +219,11 @@ def _summarize_groq(prompt):
             f"response truncated (finish_reason={choice.finish_reason!r}, "
             f"completion_tokens={completion_tokens}/{GROQ_MAX_COMPLETION_TOKENS})"
         )
-    return choice.message.content.strip()
+    content = choice.message.content.strip()
+    missing = [h for h in _GROQ_REQUIRED_HEADERS if h not in content]
+    if missing:
+        raise RuntimeError(f"response truncated: missing section(s) {', '.join(missing)}")
+    return content
 
 
 def generate_summary(text):
