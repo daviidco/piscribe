@@ -17,6 +17,19 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
   summarized it (e.g. `_resumen: Groq · qwen/qwen3.8-27b_`), matching the
   signature already sent with the original Telegram delivery — previously
   this was only visible in that original message or by reading `/logs`.
+- **Chunked Groq summarization** for long transcripts (`summary.py`'s
+  `_summarize_groq_chunked`, new `GROQ_CHUNK_CHARS`/
+  `GROQ_CHUNK_MAX_COMPLETION_TOKENS` config): a transcript longer than
+  `GROQ_CHUNK_CHARS` (default 6000 chars) is split into chunks, each
+  summarized into terse notes with its own small output budget, then combined
+  with one more Groq call into the final structured summary — instead of one
+  request whose estimated output can exceed Groq's free-tier OTPM limit for a
+  long, dense meeting even with the already-concise prompt. If any chunk or
+  the synthesis call fails, the whole attempt is aborted and the FULL
+  transcript falls back to local Ollama, same as before — never a mix of
+  partial Groq content and a local summary. Note this raises the ceiling on
+  how long a meeting Groq can handle; it does not remove the per-minute cap,
+  since enough chunks fired within the same minute can still exhaust it.
 
 ### Changed
 

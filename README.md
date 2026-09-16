@@ -31,7 +31,12 @@ On each run it:
    served by [Ollama](https://ollama.com/) — asking for a detailed, structured
    Spanish summary (synthesis, key points, decisions, commitments with
    owner/deadline, risks, open items), attributing statements to a speaker only
-   when the transcript makes that identifiable.
+   when the transcript makes that identifiable. A transcript longer than
+   `GROQ_CHUNK_CHARS` is split and summarized chunk by chunk, then combined
+   with one more Groq call, instead of sent as a single request — this raises
+   how long a meeting Groq can handle before its free-tier output-tokens-per-
+   minute limit rejects the request, though a long enough one can still
+   exhaust that per-minute budget partway through and fall back to local.
 5. Posts the summary to one or more Telegram chats through the Bot API, signed
    with which engine transcribed and summarized it (e.g. `_resumen: Groq ·
    qwen/qwen3.8-27b_` or `_resumen: local · Ollama qwen3:1.7b_`).

@@ -74,6 +74,15 @@ GROQ_MAX_AUDIO_MB = float(os.environ.get("GROQ_MAX_AUDIO_MB", "24"))
 # meeting; a response cut short by this cap is treated as a failure and falls
 # back to local Ollama rather than delivered incomplete (see summary.py).
 GROQ_MAX_COMPLETION_TOKENS = int(os.environ.get("GROQ_MAX_COMPLETION_TOKENS", "8192"))
+# A transcript longer than this is split into chunks for Groq instead of sent
+# as one request: Groq's free-tier OTPM cap is checked per request, and a
+# single request for a long, dense meeting can need more output than it
+# allows even with the concise prompt. Each chunk needs far less output than
+# one request for the whole transcript would (see summary.py's
+# _summarize_groq_chunked for the actual OTPM trade-off this does and doesn't
+# solve).
+GROQ_CHUNK_CHARS = int(os.environ.get("GROQ_CHUNK_CHARS", "6000"))
+GROQ_CHUNK_MAX_COMPLETION_TOKENS = int(os.environ.get("GROQ_CHUNK_MAX_COMPLETION_TOKENS", "500"))
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi"}
 TEXT_EXTENSIONS = {".txt", ".md"}

@@ -45,6 +45,32 @@ _COMPLETE_GROQ_RESPONSE = "\n\n".join(
 )
 
 
+class _SequentialFakeGroqClient:  # pylint: disable=too-few-public-methods
+    """Stand-in for groq.Groq that returns one canned response per call, in
+    order — for chunking, which makes several sequential requests on the
+    same client. Each entry in ``responses`` is a
+    ``(content, finish_reason, completion_tokens)`` tuple; ``.calls`` records
+    every prompt sent, in order, for assertions."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = []
+        self.chat = SimpleNamespace(completions=self)
+
+    def create(self, **kwargs):
+        """Pop the next canned response, recording the prompt that asked for it."""
+        self.calls.append(kwargs["messages"][0]["content"])
+        content, finish_reason, completion_tokens = self._responses.pop(0)
+        message = SimpleNamespace(content=content, reasoning=None)
+        choice = SimpleNamespace(message=message, finish_reason=finish_reason)
+        usage = (
+            SimpleNamespace(completion_tokens=completion_tokens)
+            if completion_tokens is not None
+            else None
+        )
+        return SimpleNamespace(choices=[choice], usage=usage)
+
+
 def test_groq_summary_used_when_it_succeeds(monkeypatch):
     """Groq succeeds: its text is used directly, with the CONCISE prompt, and
     local Ollama never runs."""
@@ -284,3 +310,120 @@ def test_groq_prompt_template_is_short_and_capped():
     assert "máximo 3-4 viñetas por sección" in prompt
     assert "no lo adivines" in prompt
     assert len(summary._PROMPT_TEMPLATE_GROQ) < len(summary._PROMPT_TEMPLATE)
+
+
+# ---------------------------------------------------------------------------
+# Chunking: a transcript longer than GROQ_CHUNK_CHARS is split, summarized
+# chunk by chunk, then synthesized into one final structured summary.
+# ---------------------------------------------------------------------------
+
+def test_split_into_chunks_short_text_is_one_chunk():
+    """Text under the limit comes back as a single chunk, unchanged."""
+    assert summary._split_into_chunks("hola", max_chars=100) == ["hola"]
+
+
+def test_split_into_chunks_respects_max_chars_and_keeps_all_content():
+    """A long, newline-rich text splits into within-limit chunks, losing nothing."""
+    text = "linea de prueba\n" * 500  # ~8.5k chars, newline every ~16
+    chunks = summary._split_into_chunks(text, max_chars=2000)
+
+    assert len(chunks) > 1
+    assert all(len(c) <= 2000 for c in chunks)
+    assert "\n".join(chunks).replace("\n", "") == text.replace("\n", "")
+
+
+def test_split_into_chunks_hard_cuts_a_line_with_no_newline():
+    """With no newline to break on, the splitter falls back to hard character cuts."""
+    text = "x" * 9000
+    chunks = summary._split_into_chunks(text, max_chars=4000)
+
+    assert [len(c) for c in chunks] == [4000, 4000, 1000]
+    assert "".join(chunks) == text
+
+
+def test_summarize_groq_chunked_splits_summarizes_and_synthesizes(monkeypatch):
+    """A long transcript is split into chunks, each summarized on its own,
+    then combined into one final structured summary via a synthesis call."""
+    monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
+    monkeypatch.setattr(summary, "GROQ_CHUNK_CHARS", 20)
+    text = "a" * 15 + "\n" + "b" * 15 + "\n" + "c" * 15  # -> 3 chunks at max_chars=20
+
+    fake = _SequentialFakeGroqClient([
+        ("PUNTOS: nota uno", "stop", 50),
+        ("PUNTOS: nota dos", "stop", 50),
+        ("PUNTOS: nota tres", "stop", 50),
+        (_COMPLETE_GROQ_RESPONSE, "stop", 300),
+    ])
+    monkeypatch.setattr(summary, "Groq", lambda **_kw: fake)
+
+    result = summary._summarize_groq_chunked(text)
+
+    assert result == _COMPLETE_GROQ_RESPONSE
+    assert len(fake.calls) == 4  # 3 chunks + 1 synthesis
+    synthesis_prompt = fake.calls[-1]
+    assert "nota uno" in synthesis_prompt
+    assert "nota dos" in synthesis_prompt
+    assert "nota tres" in synthesis_prompt
+
+
+def test_summarize_groq_chunked_raises_and_stops_early_if_a_chunk_fails(monkeypatch):
+    """A single failing chunk aborts the whole attempt — the synthesis call
+    never runs, so nothing partial is ever combined or returned."""
+    monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
+    monkeypatch.setattr(summary, "GROQ_CHUNK_CHARS", 20)
+    text = "a" * 15 + "\n" + "b" * 15
+
+    fake = _SequentialFakeGroqClient([
+        ("PUNTOS: nota uno", "stop", 50),
+        ("cortado", "length", 500),
+    ])
+    monkeypatch.setattr(summary, "Groq", lambda **_kw: fake)
+
+    try:
+        summary._summarize_groq_chunked(text)
+        raise AssertionError("expected a RuntimeError when a chunk fails")
+    except RuntimeError as e:
+        assert "truncat" in str(e)
+    assert len(fake.calls) == 2  # synthesis never got called
+
+
+def test_generate_summary_uses_chunking_only_past_groq_chunk_chars(monkeypatch):
+    """generate_summary routes to the chunked path only when the transcript
+    is longer than GROQ_CHUNK_CHARS; a short one still goes single-shot."""
+    monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
+    monkeypatch.setattr(summary, "GROQ_CHUNK_CHARS", 20)
+    monkeypatch.setattr(summary, "_summarize_groq", lambda _prompt: "single-shot")
+    monkeypatch.setattr(summary, "_summarize_groq_chunked", lambda _text: "chunked")
+
+    short_summary, _ = summary.generate_summary("texto corto")
+    long_summary, _ = summary.generate_summary("x" * 30)
+
+    assert short_summary == "single-shot"
+    assert long_summary == "chunked"
+
+
+def test_chunked_groq_failure_falls_back_to_local_with_the_full_transcript(monkeypatch, read_log):
+    """If chunking fails outright, local gets re-summarized from the FULL
+    original transcript — never a mix of partial Groq notes and local."""
+    monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
+    monkeypatch.setattr(summary, "GROQ_CHUNK_CHARS", 5)
+    full_text = "x" * 30
+
+    def boom(_text):
+        raise RuntimeError("chunk 1/6 response truncated: missing section(s) ...")
+
+    monkeypatch.setattr(summary, "_summarize_groq_chunked", boom)
+    seen = {}
+
+    def fake_summarize_local(prompt):
+        seen["prompt"] = prompt
+        return "resumen local completo"
+
+    monkeypatch.setattr(summary, "_summarize_local", fake_summarize_local)
+
+    text, backend = summary.generate_summary(full_text)
+
+    assert text == "resumen local completo"
+    assert backend == f"local · Ollama {summary.QWEN_MODEL}"
+    assert seen["prompt"] == summary._PROMPT_TEMPLATE.format(text=full_text)
+    assert "truncat" in read_log()
