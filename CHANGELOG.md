@@ -36,8 +36,31 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
   Groq content and a local summary. This raises the ceiling on how much a
   single meeting can ask of Groq; it does not remove the per-minute cap,
   since enough chunks fired within the same minute can still exhaust it.
+- **Chunk-level retry with backoff**: a single chunk (or the synthesis call)
+  rejected for a transient OTPM `RateLimitError` now gets up to two retries
+  with backoff (5s, then 15s — `_CHUNK_RETRY_DELAYS_SECONDS`) before the whole
+  chunked attempt is aborted. OTPM is a per-minute budget, not a per-request
+  wall, so a small chunk request rejected right now is quite likely to fit
+  once the window has partially refreshed — previously any single chunk
+  failure discarded every already-summarized chunk and fell all the way back
+  to local (observed taking ~7 minutes), for what's often just a few seconds
+  of transient contention. Any non-`RateLimitError` failure (missing headers,
+  network error, ...) is still not retried, since waiting wouldn't fix those.
+- **Per-call temperature**: chunk note-extraction keeps `temperature=0.3`, but
+  the synthesis call (merging/deduplicating already-extracted notes rather
+  than generating from the transcript) now uses `0.1` — more deterministic,
+  favoring fidelity to what the chunks actually said over the synthesis call
+  editorializing. Previously every Groq call shared the same hardcoded `0.3`.
 
 ### Changed
+
+- The Groq required-section check (`_groq_chat`'s `require_headers`) now
+  matches header text case-, heading-level-, and trailing-colon-insensitively
+  (`## Puntos Clave`, `### puntos clave:`, and `## Puntos clave` all count) —
+  it was an exact substring match before, so a model that wrote a perfectly
+  complete response with a trivially different heading style (capitalization,
+  a colon, `#` vs `##`) was wrongly flagged as having skipped the section and
+  sent to a needless fallback.
 
 - On-demand runs (`/run`, `/retry`, `/resummarize`) now send every message —
   progress, per-file failures, the summary itself, its signature — ONLY to

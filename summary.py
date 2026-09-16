@@ -6,6 +6,8 @@ by Ollama on any failure — network, timeout, rate limit, context-length, or
 anything else. Every attempt and fallback is logged.
 """
 
+import time
+
 import ollama
 from groq import Groq, RateLimitError
 
@@ -154,10 +156,27 @@ Transcripción:
 # _groq_chat) — the prompt above requires the model to always emit all five,
 # even as a "sin información" placeholder, so a missing header reliably means
 # the model didn't follow instructions or got cut off, not that the section
-# legitimately had nothing to say.
-_GROQ_REQUIRED_HEADERS = (
-    "## Resumen", "## Puntos clave", "## Decisiones", "## Compromisos", "## Pendientes",
-)
+# legitimately had nothing to say. Bare text, not "## "-prefixed: matched via
+# _missing_headers, which is tolerant of heading level, case, and punctuation
+# the model might vary even when it otherwise followed the format faithfully.
+_GROQ_REQUIRED_HEADER_TEXT = ("resumen", "puntos clave", "decisiones", "compromisos", "pendientes")
+
+
+def _missing_headers(content):
+    """Which of ``_GROQ_REQUIRED_HEADER_TEXT`` don't appear as a Markdown
+    heading in ``content``.
+
+    Tolerant of heading level (``#`` vs ``##``), case, and an incidental
+    trailing colon — a real model's response varies on all three even when it
+    faithfully followed the prompt's required structure, and an exact-string
+    check would wrongly treat that as a missing (truncated) section.
+    """
+    found = set()
+    for line in content.splitlines():
+        line = line.strip()
+        if line.startswith("#"):
+            found.add(line.lstrip("#").strip().rstrip(":").strip().lower())
+    return [h for h in _GROQ_REQUIRED_HEADER_TEXT if h not in found]
 
 # Used only for a transcript longer than GROQ_CHUNK_CHARS (see
 # _summarize_groq_chunked): one of these runs per chunk, asking for terse,
@@ -271,8 +290,17 @@ def _summarize_local(prompt):
 # "length" — catches that case as well.
 _GROQ_NEAR_CAP_RATIO = 0.95
 
+# Used for the single-shot summary and per-chunk note extraction — both
+# generate prose from raw transcript text, where a little variation is fine.
+_GROQ_TEMPERATURE = 0.3
+# Used only for the synthesis call (see _summarize_groq_chunked), which just
+# merges and deduplicates already-extracted notes rather than generating from
+# the transcript — a more deterministic setting favors fidelity to what the
+# chunk notes actually said over the synthesis call editorializing.
+_GROQ_SYNTHESIS_TEMPERATURE = 0.1
 
-def _groq_chat(client, prompt, max_completion_tokens, *, require_headers, label):
+
+def _groq_chat(client, prompt, max_completion_tokens, *, temperature, require_headers, label):
     """Run one Groq chat completion and apply the shared truncation checks.
 
     Uses ``reasoning_format="parsed"`` so ``message.content`` holds only the
@@ -287,8 +315,8 @@ def _groq_chat(client, prompt, max_completion_tokens, *, require_headers, label)
     though Groq reported a clean stop; or, when ``require_headers`` is set —
     observed in practice with plenty of unused token budget and a clean
     ``"stop"`` — the model simply skipping one of the section headers
-    ``_GROQ_REQUIRED_HEADERS`` requires, which no token-based check can catch
-    since nothing was actually cut short.
+    ``_GROQ_REQUIRED_HEADER_TEXT`` requires, which no token-based check can
+    catch since nothing was actually cut short.
 
     Args:
         client: An already-constructed ``groq.Groq`` client.
@@ -296,7 +324,9 @@ def _groq_chat(client, prompt, max_completion_tokens, *, require_headers, label)
         max_completion_tokens: Output token budget for this specific request
             (smaller for a chunk than for a single-shot summary or the final
             synthesis — see :func:`_summarize_groq_chunked`).
-        require_headers: Whether to also require ``_GROQ_REQUIRED_HEADERS``.
+        temperature: Sampling temperature for this specific request — see
+            ``_GROQ_TEMPERATURE``/``_GROQ_SYNTHESIS_TEMPERATURE``.
+        require_headers: Whether to also require ``_GROQ_REQUIRED_HEADER_TEXT``.
             Off for a chunk request, which intentionally uses a different,
             uncategorized note format (see ``_PROMPT_TEMPLATE_GROQ_CHUNK``).
         label: Short tag for this call's log line and any error it raises
@@ -311,7 +341,7 @@ def _groq_chat(client, prompt, max_completion_tokens, *, require_headers, label)
     completion = client.chat.completions.create(
         model=GROQ_MODEL,
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.3,
+        temperature=temperature,
         max_completion_tokens=max_completion_tokens,
         reasoning_format="parsed",
     )
@@ -332,12 +362,46 @@ def _groq_chat(client, prompt, max_completion_tokens, *, require_headers, label)
         )
     content = choice.message.content.strip()
     if require_headers:
-        missing = [h for h in _GROQ_REQUIRED_HEADERS if h not in content]
+        missing = _missing_headers(content)
         if missing:
             raise RuntimeError(
                 f"{label} response truncated: missing section(s) {', '.join(missing)}"
             )
     return content
+
+
+# OTPM is a per-MINUTE budget, not a per-request wall — a chunk's small
+# request rejected right now is quite likely to fit once the window has
+# partially refreshed a few seconds later. Retrying here (used only for
+# per-chunk and synthesis calls, see _summarize_groq_chunked) is far cheaper
+# than aborting the whole chunked attempt and redoing everything locally.
+_CHUNK_RETRY_DELAYS_SECONDS = (5, 15)
+
+
+def _groq_chat_with_retry(
+    client, prompt, max_completion_tokens, *, temperature, require_headers, label
+):
+    """Like :func:`_groq_chat`, but retries a transient OTPM rejection with
+    backoff before giving up.
+
+    Only ``RateLimitError`` is retried — a per-minute rate limit is the one
+    failure mode a short wait can plausibly fix. Any other exception (missing
+    headers, a network error, an invalid key, ...) is raised immediately,
+    same as :func:`_groq_chat` alone.
+    """
+    delays = list(_CHUNK_RETRY_DELAYS_SECONDS)
+    while True:
+        try:
+            return _groq_chat(
+                client, prompt, max_completion_tokens,
+                temperature=temperature, require_headers=require_headers, label=label,
+            )
+        except RateLimitError:
+            if not delays:
+                raise
+            delay = delays.pop(0)
+            log_warning(f"{label} hit OTPM; retrying in {delay}s ({len(delays)} attempt(s) left).")
+            time.sleep(delay)
 
 
 def _summarize_groq(prompt):
@@ -349,7 +413,8 @@ def _summarize_groq(prompt):
     """
     client = Groq(api_key=GROQ_API_KEY, timeout=GROQ_TIMEOUT_SECONDS)
     return _groq_chat(
-        client, prompt, GROQ_MAX_COMPLETION_TOKENS, require_headers=True, label="summary"
+        client, prompt, GROQ_MAX_COMPLETION_TOKENS,
+        temperature=_GROQ_TEMPERATURE, require_headers=True, label="summary",
     )
 
 
@@ -368,18 +433,20 @@ def _summarize_groq_chunked(text):
     Each chunk needs far less output than one request for the whole
     transcript would, so each is far less likely to be rejected on its own.
 
-    What this does NOT solve: OTPM is a per-MINUTE cap, not a per-request one.
-    Enough chunks fired close together can still add up to more than one
-    request's worth of output within the same window — this raises the
-    ceiling on how long a meeting Groq can handle, it does not remove the
-    limit. A transcript long enough to need many chunks can still exhaust the
-    per-minute budget partway through and fall back to local, same as before.
+    What this does NOT fully solve: OTPM is a per-MINUTE cap, not a per-request
+    one. Each chunk and the synthesis call get a couple of backoff retries on
+    a transient rate-limit rejection (see :func:`_groq_chat_with_retry`) since
+    a small request is quite likely to fit once the window has partially
+    refreshed — but a transcript long enough to need many chunks fired within
+    the same window can still exhaust the per-minute budget past what
+    retrying can recover from, and falls back to local, same as before.
 
     Raises:
-        Exception: If any chunk or the synthesis call fails. The whole
-            attempt is aborted rather than risk mixing partial Groq content
-            with a local fallback — the caller re-summarizes the FULL
-            transcript locally instead (see :func:`generate_summary`).
+        Exception: If any chunk or the synthesis call fails (including
+            exhausting its retries). The whole attempt is aborted rather than
+            risk mixing partial Groq content with a local fallback — the
+            caller re-summarizes the FULL transcript locally instead (see
+            :func:`generate_summary`).
     """
     chunks = _split_into_chunks(text, GROQ_CHUNK_CHARS, GROQ_CHUNK_OVERLAP_CHARS)
     log(f"Transcript is {len(text)} chars; splitting into {len(chunks)} chunks for Groq.")
@@ -389,9 +456,10 @@ def _summarize_groq_chunked(text):
     for index, chunk in enumerate(chunks, start=1):
         prompt = _PROMPT_TEMPLATE_GROQ_CHUNK.format(index=index, total=len(chunks), text=chunk)
         partials.append(
-            _groq_chat(
+            _groq_chat_with_retry(
                 client, prompt, GROQ_CHUNK_MAX_COMPLETION_TOKENS,
-                require_headers=False, label=f"chunk {index}/{len(chunks)}",
+                temperature=_GROQ_TEMPERATURE, require_headers=False,
+                label=f"chunk {index}/{len(chunks)}",
             )
         )
 
@@ -399,9 +467,9 @@ def _summarize_groq_chunked(text):
         f"[Fragmento {i}/{len(chunks)}]\n{partial}" for i, partial in enumerate(partials, start=1)
     )
     synthesis_prompt = _PROMPT_TEMPLATE_GROQ_SYNTHESIS.format(text=notes)
-    return _groq_chat(
+    return _groq_chat_with_retry(
         client, synthesis_prompt, GROQ_MAX_COMPLETION_TOKENS,
-        require_headers=True, label="synthesis",
+        temperature=_GROQ_SYNTHESIS_TEMPERATURE, require_headers=True, label="synthesis",
     )
 
 

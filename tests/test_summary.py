@@ -3,6 +3,7 @@
 # Reaches into the module's own prompt template and Groq wrapper on purpose.
 # pylint: disable=protected-access
 
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -50,26 +51,33 @@ class _FakeGroqClient:  # pylint: disable=too-few-public-methods
 # baseline "this is a complete answer" fixture for tests that aren't
 # specifically exercising the missing-section check.
 _COMPLETE_GROQ_RESPONSE = "\n\n".join(
-    f"{header}\ncontenido" for header in summary._GROQ_REQUIRED_HEADERS
+    f"## {header}\ncontenido" for header in summary._GROQ_REQUIRED_HEADER_TEXT
 )
 
 
 class _SequentialFakeGroqClient:  # pylint: disable=too-few-public-methods
     """Stand-in for groq.Groq that returns one canned response per call, in
     order — for chunking, which makes several sequential requests on the
-    same client. Each entry in ``responses`` is a
-    ``(content, finish_reason, completion_tokens)`` tuple; ``.calls`` records
-    every prompt sent, in order, for assertions."""
+    same client. Each entry in ``responses`` is either a
+    ``(content, finish_reason, completion_tokens)`` tuple, or an exception
+    instance to raise instead (for exercising retry behavior). ``.calls``
+    records every prompt sent, in order; ``.temperatures`` records the
+    ``temperature`` kwarg for the same calls, in order."""
 
     def __init__(self, responses):
         self._responses = list(responses)
         self.calls = []
+        self.temperatures = []
         self.chat = SimpleNamespace(completions=self)
 
     def create(self, **kwargs):
-        """Pop the next canned response, recording the prompt that asked for it."""
+        """Pop the next canned response (or exception) for this call."""
         self.calls.append(kwargs["messages"][0]["content"])
-        content, finish_reason, completion_tokens = self._responses.pop(0)
+        self.temperatures.append(kwargs.get("temperature"))
+        entry = self._responses.pop(0)
+        if isinstance(entry, BaseException):
+            raise entry
+        content, finish_reason, completion_tokens = entry
         message = SimpleNamespace(content=content, reasoning=None)
         choice = SimpleNamespace(message=message, finish_reason=finish_reason)
         usage = (
@@ -180,7 +188,27 @@ def test_summarize_groq_raises_when_a_required_section_is_missing(monkeypatch):
         raise AssertionError("expected a RuntimeError for a response missing sections")
     except RuntimeError as e:
         assert "truncat" in str(e)
-        assert "Decisiones" in str(e)
+        assert "decisiones" in str(e)
+
+
+def test_missing_headers_tolerates_case_punctuation_and_heading_level():
+    """A model that varies case, adds a trailing colon, or uses a different
+    heading level for an otherwise-compliant response isn't wrongly flagged
+    as having skipped the section — only content that's genuinely absent is."""
+    varied = "# Resumen\ntexto\n\n## Puntos Clave\n- x\n\n## Decisiones:\n- y\n\n"
+    varied += "###   compromisos   \n- z\n\n## Pendientes\n- w"
+
+    assert summary._missing_headers(varied) == []
+
+
+def test_missing_headers_still_flags_a_genuinely_absent_section():
+    """Tolerance for formatting doesn't mean it stops catching a real gap —
+    a response with no 'pendientes' heading anywhere is still flagged."""
+    content = (
+        "## Resumen\ntexto\n\n## Puntos clave\n- x\n\n## Decisiones\n- y\n\n## Compromisos\n- z"
+    )
+
+    assert summary._missing_headers(content) == ["pendientes"]
 
 
 def test_summarize_groq_raises_when_truncated_by_the_token_cap(monkeypatch):
@@ -419,6 +447,91 @@ def test_summarize_groq_chunked_raises_and_stops_early_if_a_chunk_fails(monkeypa
     except RuntimeError as e:
         assert "truncat" in str(e)
     assert len(fake.calls) == 2  # synthesis never got called
+
+
+def test_summarize_groq_chunked_retries_a_chunk_that_hits_a_transient_rate_limit(
+    monkeypatch,
+):
+    """A chunk rejected once for OTPM succeeds on retry — the whole attempt
+    isn't aborted just because one small request hit a transient rate limit."""
+    monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
+    monkeypatch.setattr(summary, "GROQ_CHUNK_CHARS", 20)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    text = "a" * 15  # -> 1 chunk
+
+    fake = _SequentialFakeGroqClient([
+        _fake_rate_limit_error(),          # chunk 1, attempt 1: rejected
+        ("PUNTOS: nota uno", "stop", 50),  # chunk 1, attempt 2: succeeds
+        (_COMPLETE_GROQ_RESPONSE, "stop", 300),  # synthesis
+    ])
+    monkeypatch.setattr(summary, "Groq", lambda **_kw: fake)
+
+    result = summary._summarize_groq_chunked(text)
+
+    assert result == _COMPLETE_GROQ_RESPONSE
+    assert len(fake.calls) == 3
+
+
+def test_summarize_groq_chunked_aborts_once_a_chunk_exhausts_its_retries(monkeypatch):
+    """A chunk that keeps hitting the rate limit past its retry budget still
+    aborts the whole attempt — retrying isn't unlimited."""
+    monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
+    monkeypatch.setattr(summary, "GROQ_CHUNK_CHARS", 20)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    text = "a" * 15  # -> 1 chunk
+    attempts = 1 + len(summary._CHUNK_RETRY_DELAYS_SECONDS)
+
+    fake = _SequentialFakeGroqClient([_fake_rate_limit_error() for _ in range(attempts)])
+    monkeypatch.setattr(summary, "Groq", lambda **_kw: fake)
+
+    try:
+        summary._summarize_groq_chunked(text)
+        raise AssertionError("expected a RateLimitError once retries are exhausted")
+    except RateLimitError:
+        pass
+    assert len(fake.calls) == attempts  # no call left over for a synthesis that never ran
+
+
+def test_summarize_groq_chunked_does_not_retry_a_non_rate_limit_failure(monkeypatch):
+    """A chunk failing for any reason other than a rate limit (network error,
+    truncation, ...) is not retried — waiting wouldn't fix any of those."""
+    monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
+    monkeypatch.setattr(summary, "GROQ_CHUNK_CHARS", 20)
+    slept = []
+    monkeypatch.setattr(time, "sleep", slept.append)
+    text = "a" * 15  # -> 1 chunk
+
+    fake = _SequentialFakeGroqClient([RuntimeError("connection reset")])
+    monkeypatch.setattr(summary, "Groq", lambda **_kw: fake)
+
+    try:
+        summary._summarize_groq_chunked(text)
+        raise AssertionError("expected the RuntimeError to propagate immediately")
+    except RuntimeError as e:
+        assert "connection reset" in str(e)
+    assert len(fake.calls) == 1  # no retry attempted
+    assert not slept  # and no backoff wait happened either
+
+
+def test_summarize_groq_chunked_uses_a_lower_temperature_for_the_synthesis_call(monkeypatch):
+    """Per-chunk note extraction and the final synthesis call use different,
+    intentional temperatures — synthesis is deterministic merging of notes
+    already extracted, not fresh generation from the raw transcript."""
+    monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
+    monkeypatch.setattr(summary, "GROQ_CHUNK_CHARS", 20)
+    text = "a" * 15 + "\n" + "b" * 15  # -> 2 chunks
+
+    fake = _SequentialFakeGroqClient([
+        ("PUNTOS: nota uno", "stop", 50),
+        ("PUNTOS: nota dos", "stop", 50),
+        (_COMPLETE_GROQ_RESPONSE, "stop", 300),
+    ])
+    monkeypatch.setattr(summary, "Groq", lambda **_kw: fake)
+
+    summary._summarize_groq_chunked(text)
+
+    assert fake.temperatures[:2] == [summary._GROQ_TEMPERATURE, summary._GROQ_TEMPERATURE]
+    assert fake.temperatures[2] == summary._GROQ_SYNTHESIS_TEMPERATURE
 
 
 def test_generate_summary_retries_chunked_after_an_otpm_rate_limit(monkeypatch, read_log):
