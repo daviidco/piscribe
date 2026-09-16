@@ -347,7 +347,32 @@ def test_split_into_chunks_hard_cuts_a_line_with_no_newline():
     chunks = summary._split_into_chunks(text, max_chars=4000)
 
     assert [len(c) for c in chunks] == [4000, 4000, 1000]
-    assert "".join(chunks) == text
+
+
+def test_split_into_chunks_prefers_a_blank_line_over_a_later_single_newline():
+    """A blank line (a paragraph or speaker-change boundary, when the
+    transcript has one) within range is preferred as the cut point over a
+    single newline that sits closer to max_chars — keeping a turn intact
+    matters more than using every available character."""
+    text = "AAAA\n\nBBBB\nCCCC\n\nDDDD"
+    chunks = summary._split_into_chunks(text, max_chars=16)
+
+    assert chunks[0] == "AAAA"
+    assert "\n".join(chunks).replace("\n", "") == text.replace("\n", "")
+
+
+def test_split_into_chunks_repeats_overlap_chars_between_consecutive_chunks():
+    """Each chunk after the first repeats the tail of the previous one, so a
+    point made right at a cut — a sentence, a decision — lands in both
+    chunks instead of being lost to whichever side didn't get it."""
+    text = "a" * 15 + "\n" + "b" * 15 + "\n" + "c" * 15  # 47 chars, cuts at 15/15/15
+    chunks = summary._split_into_chunks(text, max_chars=20, overlap_chars=5)
+
+    assert chunks == [
+        "a" * 15,
+        "a" * 5 + "b" * 15,
+        "b" * 5 + "c" * 15,
+    ]
 
 
 def test_summarize_groq_chunked_splits_summarizes_and_synthesizes(monkeypatch):

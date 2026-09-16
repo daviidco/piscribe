@@ -13,6 +13,7 @@ from config import (
     GROQ_API_KEY,
     GROQ_CHUNK_CHARS,
     GROQ_CHUNK_MAX_COMPLETION_TOKENS,
+    GROQ_CHUNK_OVERLAP_CHARS,
     GROQ_MAX_COMPLETION_TOKENS,
     GROQ_MODEL,
     GROQ_TIMEOUT_SECONDS,
@@ -219,23 +220,38 @@ Notas parciales:
 """
 
 
-def _split_into_chunks(text, max_chars):
-    """Split ``text`` into chunks no longer than ``max_chars``.
+def _split_into_chunks(text, max_chars, overlap_chars=0):
+    """Split ``text`` into chunks of at most ``max_chars`` (plus overlap; see
+    below), preferring natural boundaries over an arbitrary cut point.
 
-    Breaks on the nearest earlier newline so a chunk never cuts a line in
-    half; falls back to a hard cut only when a single line exceeds
-    ``max_chars`` on its own (mirrors ``telegram_api.split_message``, kept
-    separate since the two have no real reason to share code).
+    The cut point for each chunk prefers a blank line (a paragraph or
+    speaker-change boundary, when the transcript has one) within range, falls
+    back to any single newline, and only hard-cuts mid-line when a stretch
+    that long has no line break at all — mirrors
+    ``telegram_api.split_message``, kept separate since the two have no real
+    reason to share code.
+
+    Each chunk after the first also repeats the last ``overlap_chars``
+    characters of the previous one (so it can be up to
+    ``max_chars + overlap_chars`` long): a point made right at a cut — a
+    sentence, a decision — would otherwise land entirely on one side, and
+    whichever chunk didn't get it has no way to know it was there.
     """
     chunks = []
+    tail = ""
     while len(text) > max_chars:
-        cut = text.rfind("\n", 0, max_chars)
+        window = text[:max_chars]
+        cut = window.rfind("\n\n")
+        if cut <= 0:
+            cut = window.rfind("\n")
         if cut <= 0:
             cut = max_chars
-        chunks.append(text[:cut])
+        raw = text[:cut]
+        chunks.append(tail + raw)
+        tail = raw[-overlap_chars:] if overlap_chars else ""
         text = text[cut:].lstrip("\n")
     if text:
-        chunks.append(text)
+        chunks.append(tail + text)
     return chunks
 
 
@@ -365,7 +381,7 @@ def _summarize_groq_chunked(text):
             with a local fallback — the caller re-summarizes the FULL
             transcript locally instead (see :func:`generate_summary`).
     """
-    chunks = _split_into_chunks(text, GROQ_CHUNK_CHARS)
+    chunks = _split_into_chunks(text, GROQ_CHUNK_CHARS, GROQ_CHUNK_OVERLAP_CHARS)
     log(f"Transcript is {len(text)} chars; splitting into {len(chunks)} chunks for Groq.")
     client = Groq(api_key=GROQ_API_KEY, timeout=GROQ_TIMEOUT_SECONDS)
 
