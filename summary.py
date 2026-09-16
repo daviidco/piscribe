@@ -20,7 +20,9 @@ from utils import log, log_warning
 
 # The prompt's wording/line lengths are content, not code — kept verbatim.
 # pylint: disable-next=line-too-long
-_PROMPT_TEMPLATE = """Analiza la transcripción completa que aparece al final de este mensaje y crea un resumen detallado, fiel y estructurado. No respondas sobre el proceso de análisis: entrega directamente el resumen final.
+_PROMPT_TEMPLATE = """IMPORTANTE: tu respuesta completa debe estar SIEMPRE en español, sin excepción, sin importar en qué idioma esté la transcripción. No respondas en inglés ni en ningún otro idioma bajo ninguna circunstancia.
+
+Analiza la transcripción completa que aparece al final de este mensaje y crea un resumen detallado, fiel y estructurado. No respondas sobre el proceso de análisis: entrega directamente el resumen final.
 
 ## Objetivo
 Conservar todos los detalles relevantes de la conversación sin convertir el resultado en una transcripción literal. Incluye los puntos clave tratados, decisiones, argumentos importantes, compromisos, problemas críticos y problemas resueltos. Cuando sea posible, indica qué persona mencionó cada punto.
@@ -41,7 +43,7 @@ Conservar todos los detalles relevantes de la conversación sin convertir el res
 13. Evita repetir el mismo contenido en varias secciones, salvo que sea necesario para relacionar un problema con su resolución o con un compromiso.
 
 ## Formato de salida
-Usa Markdown claro, profesional y español. Incluye únicamente las secciones que tengan contenido respaldado por la transcripción, siguiendo este orden preferente:
+Usa Markdown claro, profesional y en español (nunca en inglés ni en otro idioma). Incluye únicamente las secciones que tengan contenido respaldado por la transcripción, siguiendo este orden preferente:
 
 # Resumen de la reunión o conversación
 

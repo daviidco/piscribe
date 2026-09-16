@@ -255,10 +255,14 @@ def test_groq_response_missing_a_section_falls_back_to_local(monkeypatch, read_l
 
 
 def test_detailed_prompt_template_carries_the_transcript_and_the_spanish_instruction():
-    """Sanity check on the detailed prompt (local Ollama only)."""
+    """Sanity check on the detailed prompt (local Ollama only): the Spanish
+    requirement is stated twice — up front and again in the format section —
+    after a real run came back in English despite the original single
+    mention (qwen3:1.7b ignored it for a long, dense transcript)."""
     prompt = summary._PROMPT_TEMPLATE.format(text="HOLA_MUNDO_UNICO")
     assert "HOLA_MUNDO_UNICO" in prompt
-    assert "Usa Markdown claro, profesional y español" in prompt
+    assert "tu respuesta completa debe estar SIEMPRE en español" in prompt
+    assert "Usa Markdown claro, profesional y en español" in prompt
     assert "No inventes información" in prompt
 
 

@@ -39,6 +39,13 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
 
 ### Fixed
 
+- The local fallback prompt (`_PROMPT_TEMPLATE`, used by Ollama's `qwen3:1.7b`
+  when Groq is unavailable or rejects the request) now states the "always
+  respond in Spanish" requirement twice — once up front, once again in the
+  format section — after a real production run came back as a freeform
+  English summary with the model's own headings, ignoring the single
+  "profesional y español" mention that was there before. Observed on a long,
+  dense transcript after Groq hit its OTPM rate limit and fell back to local.
 - `/logs <n>` looked up the `n`-th most recent run instead of the run whose
   id is literally `n` — confusing, since `/history`, `/status`, the post-run
   report and every run's own log lines all display the literal id (e.g.
