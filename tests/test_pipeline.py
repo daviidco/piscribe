@@ -6,8 +6,10 @@ the network or any path outside the test sandbox.
 """
 
 # A test that receives a fixture by name necessarily shadows the fixture
-# function; that is the intended pytest pattern, not a mistake.
-# pylint: disable=redefined-outer-name
+# function; that is the intended pytest pattern, not a mistake. Reaching into
+# pipeline._targets is deliberate too: it's the one function this suite needs
+# to verify directly, not through some public wrapper.
+# pylint: disable=redefined-outer-name,protected-access
 
 from types import SimpleNamespace
 
@@ -75,7 +77,9 @@ def stub_pipeline(monkeypatch):
         pipeline, "generate_summary",
         lambda text: (f"SUMMARY<<{text.strip()}>>", "local · Ollama test-qwen"),
     )
-    monkeypatch.setattr(pipeline, "send_telegram_message", sent.append)
+    monkeypatch.setattr(
+        pipeline, "send_telegram_message", lambda text, chat_ids=None: sent.append(text)
+    )
     return sent
 
 
@@ -172,7 +176,9 @@ def test_main_continues_after_one_file_fails(monkeypatch, read_log):
     monkeypatch.setattr(pipeline, "list_pending_files", lambda: ["bad.txt", "good.txt"])
     handled = []
     sent = []
-    monkeypatch.setattr(pipeline, "send_telegram_message", sent.append)
+    monkeypatch.setattr(
+        pipeline, "send_telegram_message", lambda text, chat_ids=None: sent.append(text)
+    )
 
     def fake_process(name, **_kwargs):
         """Fake process_file that fails only for bad.txt."""
@@ -204,7 +210,9 @@ def test_main_continues_after_one_file_fails(monkeypatch, read_log):
 def test_main_logs_listing_failure_without_traceback(monkeypatch, read_log):
     """A failure while listing the pending folder is logged, not raised."""
     sent = []
-    monkeypatch.setattr(pipeline, "send_telegram_message", sent.append)
+    monkeypatch.setattr(
+        pipeline, "send_telegram_message", lambda text, chat_ids=None: sent.append(text)
+    )
 
     def boom():
         """Fake list_pending_files that fails as if rclone were missing."""
@@ -275,7 +283,7 @@ def test_retry_file_reprocesses_from_processed(monkeypatch):
     """retry_file runs process_file with source='processed' as its own run."""
     calls = {}
 
-    def fake_process(name, *, source="pending"):
+    def fake_process(name, *, source="pending", **_kwargs):
         calls["name"] = name
         calls["source"] = source
         return pipeline.FileResult(filename=name, kind="video", status="ok", summary="s")
@@ -304,7 +312,9 @@ def test_resummarize_file_uses_the_stored_transcript(monkeypatch):
         pipeline, "generate_summary",
         lambda text: (f"RE<<{text}>>", "local · Ollama test-qwen"),
     )
-    monkeypatch.setattr(pipeline, "send_telegram_message", sent.append)
+    monkeypatch.setattr(
+        pipeline, "send_telegram_message", lambda text, chat_ids=None: sent.append(text)
+    )
 
     result = pipeline.resummarize_file("nota.txt")
 
@@ -338,7 +348,9 @@ def test_run_pipeline_cron_notifies_on_cancel(monkeypatch):
     """A run cancelled mid-batch (e.g. via /cancel) tells Telegram."""
     monkeypatch.setattr(pipeline, "list_pending_files", lambda: ["x.txt"])
     sent = []
-    monkeypatch.setattr(pipeline, "send_telegram_message", sent.append)
+    monkeypatch.setattr(
+        pipeline, "send_telegram_message", lambda text, chat_ids=None: sent.append(text)
+    )
 
     def boom(_name, **_kwargs):
         raise KeyboardInterrupt()
@@ -356,7 +368,9 @@ def test_run_pipeline_cron_notifies_when_no_pending_files(monkeypatch):
     """An empty cron pass still pings Telegram, so silence never means 'stuck'."""
     monkeypatch.setattr(pipeline, "list_pending_files", list)
     sent = []
-    monkeypatch.setattr(pipeline, "send_telegram_message", sent.append)
+    monkeypatch.setattr(
+        pipeline, "send_telegram_message", lambda text, chat_ids=None: sent.append(text)
+    )
 
     result = pipeline.run_pipeline("cron")
 
@@ -370,7 +384,9 @@ def test_run_pipeline_notifies_when_paused(monkeypatch):
     pipeline.PAUSE_FLAG.parent.mkdir(parents=True, exist_ok=True)
     pipeline.PAUSE_FLAG.touch()
     sent = []
-    monkeypatch.setattr(pipeline, "send_telegram_message", sent.append)
+    monkeypatch.setattr(
+        pipeline, "send_telegram_message", lambda text, chat_ids=None: sent.append(text)
+    )
 
     result = pipeline.run_pipeline("cron")
 
@@ -383,7 +399,9 @@ def test_run_pipeline_notifies_when_only_target_is_not_pending(monkeypatch):
     """/run <file> for a file that isn't actually pending reports back, not just logs."""
     monkeypatch.setattr(pipeline, "list_pending_files", lambda: ["other.txt"])
     sent = []
-    monkeypatch.setattr(pipeline, "send_telegram_message", sent.append)
+    monkeypatch.setattr(
+        pipeline, "send_telegram_message", lambda text, chat_ids=None: sent.append(text)
+    )
 
     result = pipeline.run_pipeline("manual", only="missing.txt")
 
@@ -401,7 +419,9 @@ def test_run_pipeline_manual_trigger_gets_the_same_notifications_as_cron(monkeyp
     """
     monkeypatch.setattr(pipeline, "list_pending_files", lambda: ["a.txt", "bad.txt"])
     sent = []
-    monkeypatch.setattr(pipeline, "send_telegram_message", sent.append)
+    monkeypatch.setattr(
+        pipeline, "send_telegram_message", lambda text, chat_ids=None: sent.append(text)
+    )
 
     def fake_process(name, **_kwargs):
         if name == "bad.txt":
@@ -430,3 +450,98 @@ def test_process_file_notify_stages_reports_each_stage_with_position(
     assert any("descargando" in m and "(2/3)" in m for m in stages)
     assert any("generando resumen" in m and "(2/3)" in m for m in stages)
     assert not any("transcribiendo" in m for m in stages)  # text file, no transcription stage
+
+
+# ---------------------------------------------------------------------------
+# Message audience: cron broadcasts to every chat, on-demand triggers (/run,
+# /retry, /resummarize) go ONLY to whoever asked — same wording either way,
+# only the recipient list differs. See pipeline._targets.
+# ---------------------------------------------------------------------------
+
+def _capture_sent(monkeypatch):
+    """Monkeypatch pipeline.send_telegram_message to record (text, chat_ids) pairs."""
+    calls = []
+    monkeypatch.setattr(
+        pipeline, "send_telegram_message",
+        lambda text, chat_ids=None: calls.append((text, chat_ids)),
+    )
+    return calls
+
+
+def test_targets_broadcasts_for_cron_but_narrows_to_the_requester_for_manual():
+    """_targets: cron -> None (broadcast); an on-demand trigger -> [requested_by]."""
+    assert pipeline._targets("cron", None) is None
+    assert pipeline._targets("cron", "42") is None  # cron never has a real requester anyway
+    assert pipeline._targets("manual", "42") == ["42"]
+    assert pipeline._targets("manual", None) is None  # no requester to narrow to
+
+
+@pytest.mark.usefixtures("work_dirs")
+def test_run_pipeline_cron_messages_broadcast_to_every_chat(monkeypatch):
+    """A cron pass's messages go out with chat_ids=None (telegram_api broadcasts)."""
+    monkeypatch.setattr(pipeline, "list_pending_files", list)
+    sent = _capture_sent(monkeypatch)
+
+    pipeline.run_pipeline("cron")
+
+    assert sent  # the "sin archivos pendientes" message, at least
+    assert all(chat_ids is None for _text, chat_ids in sent)
+
+
+@pytest.mark.usefixtures("work_dirs")
+def test_run_pipeline_manual_messages_go_only_to_the_requester(monkeypatch):
+    """A manual /run's messages (start, stage, failure, end) all target just
+    whoever asked — not a broadcast to every configured chat."""
+    monkeypatch.setattr(pipeline, "list_pending_files", lambda: ["a.txt", "bad.txt"])
+    sent = _capture_sent(monkeypatch)
+
+    def fake_process(name, **_kwargs):
+        if name == "bad.txt":
+            raise RuntimeError("kaboom")
+        return pipeline.FileResult(filename=name, kind="text", status="ok")
+
+    monkeypatch.setattr(pipeline, "process_file", fake_process)
+
+    pipeline.run_pipeline("manual", requested_by="123")
+
+    assert sent  # start + failure + end, at least
+    assert all(chat_ids == ["123"] for _text, chat_ids in sent)
+
+
+@pytest.mark.usefixtures("work_dirs")
+def test_retry_file_targets_only_the_requester(monkeypatch):
+    """retry_file's process_file call — and everything it sends — is scoped
+    to the id that asked for the retry, not broadcast."""
+    seen = {}
+
+    # source is part of process_file's real signature but irrelevant here.
+    def fake_process(  # pylint: disable=unused-argument
+        name, *, source="pending", chat_ids=None, **_kwargs
+    ):
+        seen["chat_ids"] = chat_ids
+        return pipeline.FileResult(filename=name, kind="video", status="ok", summary="s")
+
+    monkeypatch.setattr(pipeline, "process_file", fake_process)
+
+    pipeline.retry_file("clip.mp4", requested_by="9")
+
+    assert seen["chat_ids"] == ["9"]
+
+
+@pytest.mark.usefixtures("work_dirs")
+def test_resummarize_file_targets_only_the_requester(monkeypatch):
+    """resummarize_file's summary/signature messages are scoped to the
+    requester, not broadcast to every configured chat."""
+    transcript = pipeline.TRANSCRIPTIONS_DIR / "nota.txt"
+    transcript.write_text("texto original", encoding="utf-8")
+    rid = store.start_run("cron")
+    store.record_file(rid, "nota.txt", "text", "ok", transcript_path=str(transcript))
+    store.finish_run(rid, "ok", 1, 1)
+
+    monkeypatch.setattr(pipeline, "generate_summary", lambda text: ("re", "local · test"))
+    sent = _capture_sent(monkeypatch)
+
+    pipeline.resummarize_file("nota.txt", requested_by="55")
+
+    assert sent
+    assert all(chat_ids == ["55"] for _text, chat_ids in sent)

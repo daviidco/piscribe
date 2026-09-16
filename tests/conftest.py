@@ -50,7 +50,7 @@ def _no_real_telegram_calls(monkeypatch):
     binding gets called. A test that wants to inspect what was sent still
     monkeypatches ``send_telegram_message`` itself, which takes precedence.
     """
-    monkeypatch.setattr(telegram_api, "_post", lambda method, fields: None)
+    monkeypatch.setattr(telegram_api, "_post", lambda method, fields, chat_ids: None)
 
 
 @pytest.fixture(autouse=True)

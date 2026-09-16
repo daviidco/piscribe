@@ -9,3 +9,8 @@ init-hook = 'import sys; sys.path.insert(0, ".")'
 # provenance); FileResult mirrors the same fields as a plain data holder.
 max-args = 10
 max-attributes = 10
+# pipeline.run_pipeline is one linear state machine (paused / listing failure /
+# only-filter miss / empty / per-file loop / cancelled / finished) where each
+# branch needs its own Telegram notification; splitting it up would scatter
+# that flow across helpers without making any single piece simpler.
+max-statements = 55

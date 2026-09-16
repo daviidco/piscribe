@@ -12,7 +12,9 @@ environment variables the bot sets when it spawns this script:
 
 * ``PISCRIBE_MODE``     ``run`` (default) | ``retry`` | ``resummarize``
 * ``PISCRIBE_TRIGGER``  ``cron`` (default) | ``manual``
-* ``PISCRIBE_BY``       Telegram id that asked for a manual run
+* ``PISCRIBE_BY``       Telegram id that asked for a manual run; every message
+  from that run — progress, failures, the summary itself — goes ONLY to that
+  id instead of broadcasting to every configured chat (see ``_targets``)
 * ``PISCRIBE_ONLY``     restrict ``run`` to one pending file; the target for
   ``retry`` (re-fetched from the processed folder) and ``resummarize``
   (re-run only the summary over the stored transcript)
@@ -106,14 +108,30 @@ def _signature_message(transcribe_backend, summarize_backend):
     return "\n".join(lines)
 
 
-def _notify(text):
-    """Post a run-progress/result message — identical for cron and manual /run.
+def _targets(trigger, requested_by):
+    """Chat id(s) a run's messages should reach.
 
-    ``/retry`` and ``/resummarize`` don't call this: they're single-file,
-    spawned via ``_single_file_run`` rather than ``run_pipeline``, and still
-    get their own announce/report from ``handlers._spawn_and_report``.
+    Cron has no requester, so its messages broadcast to every configured chat
+    (``None`` tells :func:`telegram_api.send_telegram_message` to use
+    ``TG_CHAT_IDS``). An on-demand trigger (manual ``/run``, ``/retry``,
+    ``/resummarize``) goes ONLY to whoever asked for it: a private Telegram
+    chat shares its id with the user, so the requester's user id doubles as
+    their chat id.
     """
-    send_telegram_message(text)
+    if trigger != "cron" and requested_by:
+        return [requested_by]
+    return None
+
+
+def _notify(text, chat_ids=None):
+    """Post a run-progress/result message.
+
+    The text is identical for cron and manual ``/run`` — only the audience
+    differs (see :func:`_targets`). ``/retry`` and ``/resummarize`` don't call
+    this: they're single-file, spawned via ``_single_file_run`` rather than
+    ``run_pipeline``, and message ``chat_ids`` directly instead.
+    """
+    send_telegram_message(text, chat_ids=chat_ids)
 
 
 def _prune_old_run_logs():
@@ -156,7 +174,9 @@ def _record(run_id, file_result):
     )
 
 
-def process_file(filename, *, source="pending", notify_stages=False, position=None):
+def process_file(
+    filename, *, source="pending", notify_stages=False, position=None, chat_ids=None
+):
     """Fetch one file, transcribe/read it, summarize it, and send the summary.
 
     Args:
@@ -169,6 +189,8 @@ def process_file(filename, *, source="pending", notify_stages=False, position=No
             for both cron and manual ``/run`` passes.
         position: Optional ``(index, total)``, 1-based, appended to stage
             messages so a multi-file run reads as "(2/5)" and so on.
+        chat_ids: Chat id(s) every message from this call should go to
+            (``None`` = every configured chat) — see :func:`_targets`.
 
     Returns:
         A successful :class:`FileResult`.
@@ -179,7 +201,7 @@ def process_file(filename, *, source="pending", notify_stages=False, position=No
 
     def stage(text):
         if notify_stages:
-            send_telegram_message(f"{text}{tag}")
+            send_telegram_message(f"{text}{tag}", chat_ids=chat_ids)
 
     local_path = LOCAL_DIR / filename
     kind = _kind_of(filename)
@@ -203,8 +225,10 @@ def process_file(filename, *, source="pending", notify_stages=False, position=No
 
         stage(f"🧠 generando resumen de {filename}…")
         summary, summarize_backend = generate_summary(text)
-        send_telegram_message(_summary_message(filename, summary))
-        send_telegram_message(_signature_message(transcribe_backend, summarize_backend))
+        send_telegram_message(_summary_message(filename, summary), chat_ids=chat_ids)
+        send_telegram_message(
+            _signature_message(transcribe_backend, summarize_backend), chat_ids=chat_ids
+        )
     finally:
         local_path.unlink(missing_ok=True)
 
@@ -221,7 +245,7 @@ def process_file(filename, *, source="pending", notify_stages=False, position=No
     )
 
 
-def _resummarize(filename):
+def _resummarize(filename, chat_ids=None):
     """Re-run only the summary step over ``filename``'s stored transcript."""
     started = time.monotonic()
     row = store.file_by_name(filename)
@@ -234,8 +258,12 @@ def _resummarize(filename):
     text = path.read_text(encoding="utf-8")
     summary, summarize_backend = generate_summary(text)
     transcribe_backend = row.get("transcribe_backend")
-    send_telegram_message(_summary_message(filename, summary, label="Resumen (re)"))
-    send_telegram_message(_signature_message(transcribe_backend, summarize_backend))
+    send_telegram_message(
+        _summary_message(filename, summary, label="Resumen (re)"), chat_ids=chat_ids
+    )
+    send_telegram_message(
+        _signature_message(transcribe_backend, summarize_backend), chat_ids=chat_ids
+    )
     log(f"Done: {filename}")
     return FileResult(
         filename=filename, kind=row["kind"], status="ok", transcript_path=str(path),
@@ -272,15 +300,20 @@ def _single_file_run(trigger, requested_by, filename, worker, what):
 
 def retry_file(filename, trigger="manual", requested_by=None):
     """Reprocess ``filename`` from the processed folder as its own run."""
+    chat_ids = _targets(trigger, requested_by)
     return _single_file_run(
         trigger, requested_by, filename,
-        lambda name: process_file(name, source="processed"), "retry",
+        lambda name: process_file(name, source="processed", chat_ids=chat_ids), "retry",
     )
 
 
 def resummarize_file(filename, trigger="manual", requested_by=None):
     """Re-run only the summary for ``filename`` as its own run."""
-    return _single_file_run(trigger, requested_by, filename, _resummarize, "resummarize")
+    chat_ids = _targets(trigger, requested_by)
+    return _single_file_run(
+        trigger, requested_by, filename,
+        lambda name: _resummarize(name, chat_ids=chat_ids), "resummarize",
+    )
 
 
 def run_pipeline(trigger, requested_by=None, only=None):
@@ -293,18 +326,21 @@ def run_pipeline(trigger, requested_by=None, only=None):
 
     Args:
         trigger: ``"cron"`` or ``"manual"``.
-        requested_by: Telegram id that asked for a manual run, if any.
+        requested_by: Telegram id that asked for a manual run, if any — also
+            doubles as the sole recipient of every message from this run
+            (see :func:`_targets`); cron has none, so it broadcasts instead.
         only: Restrict the pass to this one pending filename.
 
     Returns:
         A :class:`RunResult`.
     """
     run_id, log_path, result = _new_run(trigger, requested_by)
+    chat_ids = _targets(trigger, requested_by)
 
     with run_log(log_path):
         if PAUSE_FLAG.exists():
             log(f"Run {run_id}: pipeline is paused ({PAUSE_FLAG}); skipping.")
-            _notify("⏸️ pipeline en pausa; corrida omitida.")
+            _notify("⏸️ pipeline en pausa; corrida omitida.", chat_ids)
             store.finish_run(run_id, "skipped", 0, 0)
             result.status = "skipped"
             return result
@@ -314,7 +350,7 @@ def run_pipeline(trigger, requested_by=None, only=None):
             files = list_pending_files()
         except Exception as e:  # noqa: BLE001  pylint: disable=broad-exception-caught
             log_error(f"listing pending files: {e}")
-            _notify(f"❌ no pude listar Drive: {redact(str(e))}.")
+            _notify(f"❌ no pude listar Drive: {redact(str(e))}.", chat_ids)
             store.finish_run(run_id, "error", 0, 0, error=str(e))
             result.status = "error"
             result.error = str(e)
@@ -324,30 +360,32 @@ def run_pipeline(trigger, requested_by=None, only=None):
             files = [f for f in files if f == only]
             if not files:
                 log_error(f"Run {run_id}: '{only}' is not in the pending folder.")
-                _notify(f"❌ '{only}' no está en la carpeta pendiente de Drive.")
+                _notify(f"❌ '{only}' no está en la carpeta pendiente de Drive.", chat_ids)
                 store.finish_run(run_id, "error", 0, 0, error=f"{only} not pending")
                 result.status = "error"
                 return result
 
         if not files:
             log("No new files.")
-            _notify("🚀 sin archivos pendientes.")
+            _notify("🚀 sin archivos pendientes.", chat_ids)
             store.finish_run(run_id, "ok", 0, 0)
             return result
 
-        _notify(f"🚀 iniciando: {len(files)} archivo(s) pendiente(s).")
+        _notify(f"🚀 iniciando: {len(files)} archivo(s) pendiente(s).", chat_ids)
 
         try:
             for index, filename in enumerate(files, start=1):
                 try:
                     file_result = process_file(
-                        filename, notify_stages=True, position=(index, len(files))
+                        filename, notify_stages=True, position=(index, len(files)),
+                        chat_ids=chat_ids,
                     )
                 except Exception as e:  # noqa: BLE001  pylint: disable=broad-exception-caught
                     log_error(f"processing {filename}: {e}")
                     _notify(
                         f"❌ error procesando {filename} ({index}/{len(files)}): "
-                        f"{redact(str(e))}"
+                        f"{redact(str(e))}",
+                        chat_ids,
                     )
                     file_result = FileResult(
                         filename=filename, kind=_kind_of(filename), status="error", error=str(e)
@@ -356,7 +394,9 @@ def run_pipeline(trigger, requested_by=None, only=None):
                 _record(run_id, file_result)
         except KeyboardInterrupt:
             log(f"Run {run_id}: cancelled.")
-            _notify(f"🛑 corrida cancelada ({result.files_ok}/{len(files)} completados).")
+            _notify(
+                f"🛑 corrida cancelada ({result.files_ok}/{len(files)} completados).", chat_ids
+            )
             store.finish_run(run_id, "cancelled", len(result.files), result.files_ok)
             result.status = "cancelled"
             return result
@@ -367,7 +407,7 @@ def run_pipeline(trigger, requested_by=None, only=None):
         store.finish_run(run_id, result.status, total, ok)
         log(f"Run {run_id} finished: {ok}/{total} ok ({result.status}).")
         icon = "✅" if ok == total else ("❌" if ok == 0 else "⚠️")
-        _notify(f"{icon} corrida finalizada: {ok}/{total} ok.")
+        _notify(f"{icon} corrida finalizada: {ok}/{total} ok.", chat_ids)
 
     return result
 

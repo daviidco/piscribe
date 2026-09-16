@@ -45,9 +45,9 @@ def split_message(text, limit=TELEGRAM_MAX_CHARS):
         yield text
 
 
-def _post(method, fields):
-    """POST form ``fields`` to a Bot API ``method`` for every configured chat."""
-    for chat_id in TG_CHAT_IDS:
+def _post(method, fields, chat_ids):
+    """POST form ``fields`` to a Bot API ``method`` for each of ``chat_ids``."""
+    for chat_id in chat_ids:
         args = ["curl", "-s", "-X", "POST",
                 f"https://api.telegram.org/bot{TG_TOKEN}/{method}",
                 "-F", f"chat_id={chat_id}"]
@@ -58,25 +58,31 @@ def _post(method, fields):
             log_warning(f"possible error calling {method} for {chat_id}: {result.stdout}")
 
 
-def send_telegram_message(text):
-    """Send a Markdown message to every configured Telegram chat.
+def send_telegram_message(text, chat_ids=None):
+    """Send a Markdown message to ``chat_ids`` (default: every configured chat).
 
     ``**bold**`` is rewritten to Telegram's ``*bold*`` before sending. Messages
     over the Telegram length limit are split into several parts.
 
     Args:
         text: The message body. Sent with ``parse_mode=Markdown``.
+        chat_ids: Chat ids to send to. ``None`` (the default) broadcasts to
+            every chat in ``TG_CHAT_IDS`` — pass a narrower list (e.g. a
+            single requester's id) to keep an on-demand message private.
     """
     tg_text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', redact(text))
+    targets = TG_CHAT_IDS if chat_ids is None else chat_ids
     for part in split_message(tg_text):
-        _post("sendMessage", [("parse_mode", "Markdown"), ("text", part)])
+        _post("sendMessage", [("parse_mode", "Markdown"), ("text", part)], targets)
 
 
-def send_document(path, caption=""):
-    """Upload a local file to every configured Telegram chat.
+def send_document(path, caption="", chat_ids=None):
+    """Upload a local file to ``chat_ids`` (default: every configured chat).
 
     Args:
         path: Path to the file to send.
         caption: Optional caption shown with the document.
+        chat_ids: Chat ids to send to; ``None`` broadcasts to every configured chat.
     """
-    _post("sendDocument", [("document", f"@{path}"), ("caption", caption)])
+    targets = TG_CHAT_IDS if chat_ids is None else chat_ids
+    _post("sendDocument", [("document", f"@{path}"), ("caption", caption)], targets)

@@ -40,9 +40,11 @@ On each run it:
 
 Each stage above also pings Telegram — the run starting, each file's
 download/transcription/summary step, and a wrap-up with the ok/total count —
-the same whether the run came from cron or from `/run`, so a failure is never
-silent. (`/retry` and `/resummarize` are the exception: being single-file,
-they still get a simpler announce-then-result message from the bot instead.)
+with identical wording whether the run came from cron or from an on-demand
+`/run`, `/retry` or `/resummarize`, so a failure is never silent. Only the
+audience differs: cron has no requester, so it broadcasts to every chat in
+`TG_CHAT_IDS`; an on-demand trigger goes ONLY to whoever asked for it — Juan
+running `/run` doesn't put anything in Pedro's chat.
 
 Groq is entirely optional: leave `GROQ_API_KEY` blank in `.env` and every run
 uses the local `whisper.cpp` / Ollama stack only, with nothing leaving the host.

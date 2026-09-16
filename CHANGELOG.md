@@ -20,6 +20,16 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
 
 ### Changed
 
+- On-demand runs (`/run`, `/retry`, `/resummarize`) now send every message —
+  progress, per-file failures, the summary itself, its signature — ONLY to
+  the Telegram id that asked for them, instead of broadcasting to every chat
+  in `TG_CHAT_IDS`. Cron is unaffected: with no requester of its own, it still
+  broadcasts to everyone, and the wording is identical either way — only the
+  audience changes. `telegram_api.send_telegram_message`/`send_document` gained
+  an optional `chat_ids` parameter (default `None` = every configured chat) to
+  make this possible; `pipeline._targets(trigger, requested_by)` decides which
+  to use (a private Telegram chat shares its id with the user, so the
+  requester's user id doubles as the target chat id).
 - The engine signature (`_transcripción: ..._` / `_resumen: ..._`) is now
   sent as its own Telegram message, right after the summary, instead of
   appended to the same message — for both the original delivery and
