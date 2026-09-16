@@ -5,7 +5,16 @@
 
 from types import SimpleNamespace
 
+import httpx
+from groq import RateLimitError
+
 import summary
+
+
+def _fake_rate_limit_error(message="rate_limit_exceeded: OTPM"):
+    """A real groq.RateLimitError, shaped like the 429 Groq actually returns."""
+    response = httpx.Response(429, request=httpx.Request("POST", "https://api.groq.com/x"))
+    return RateLimitError(message, response=response, body=None)
 
 
 class _FakeCompletions:  # pylint: disable=too-few-public-methods
@@ -387,27 +396,60 @@ def test_summarize_groq_chunked_raises_and_stops_early_if_a_chunk_fails(monkeypa
     assert len(fake.calls) == 2  # synthesis never got called
 
 
-def test_generate_summary_uses_chunking_only_past_groq_chunk_chars(monkeypatch):
-    """generate_summary routes to the chunked path only when the transcript
-    is longer than GROQ_CHUNK_CHARS; a short one still goes single-shot."""
+def test_generate_summary_retries_chunked_after_an_otpm_rate_limit(monkeypatch, read_log):
+    """A single-shot request rejected for being too large for OTPM
+    (RateLimitError) is retried chunked instead of falling back right away —
+    the real failure mode: a transcript well under GROQ_CHUNK_CHARS can still
+    get rejected, since Groq's pre-flight estimate scales with content, not
+    just length, so a fixed size threshold can't reliably predict it."""
     monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
-    monkeypatch.setattr(summary, "GROQ_CHUNK_CHARS", 20)
-    monkeypatch.setattr(summary, "_summarize_groq", lambda _prompt: "single-shot")
-    monkeypatch.setattr(summary, "_summarize_groq_chunked", lambda _text: "chunked")
 
-    short_summary, _ = summary.generate_summary("texto corto")
-    long_summary, _ = summary.generate_summary("x" * 30)
+    def raise_rate_limit(_prompt):
+        raise _fake_rate_limit_error()
 
-    assert short_summary == "single-shot"
-    assert long_summary == "chunked"
+    monkeypatch.setattr(summary, "_summarize_groq", raise_rate_limit)
+    monkeypatch.setattr(summary, "_summarize_groq_chunked", lambda _text: "resumen chunked")
+
+    text, backend = summary.generate_summary("texto corto que igual excede OTPM")
+
+    assert text == "resumen chunked"
+    assert backend == f"Groq · {summary.GROQ_MODEL}"
+    assert "OTPM" in read_log()
 
 
-def test_chunked_groq_failure_falls_back_to_local_with_the_full_transcript(monkeypatch, read_log):
-    """If chunking fails outright, local gets re-summarized from the FULL
+def test_generate_summary_does_not_chunk_for_a_non_rate_limit_failure(monkeypatch):
+    """A Groq failure that ISN'T an OTPM rejection (network error, missing
+    sections, ...) falls straight back to local — chunking wouldn't fix any
+    of those, so it's never attempted."""
+    monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
+
+    def raise_missing_sections(_prompt):
+        raise RuntimeError("summary response truncated: missing section(s) ## Pendientes")
+
+    monkeypatch.setattr(summary, "_summarize_groq", raise_missing_sections)
+
+    def boom(_text):
+        raise AssertionError("chunking must not run for a non-rate-limit failure")
+
+    monkeypatch.setattr(summary, "_summarize_groq_chunked", boom)
+    monkeypatch.setattr(summary, "_summarize_local", lambda _prompt: "resumen local")
+
+    text, backend = summary.generate_summary("texto")
+
+    assert text == "resumen local"
+    assert backend == f"local · Ollama {summary.QWEN_MODEL}"
+
+
+def test_chunked_retry_failure_falls_back_to_local_with_the_full_transcript(monkeypatch, read_log):
+    """If the chunked retry ALSO fails, local gets summarized from the FULL
     original transcript — never a mix of partial Groq notes and local."""
     monkeypatch.setattr(summary, "GROQ_API_KEY", "fake-key")
-    monkeypatch.setattr(summary, "GROQ_CHUNK_CHARS", 5)
     full_text = "x" * 30
+
+    def raise_rate_limit(_prompt):
+        raise _fake_rate_limit_error()
+
+    monkeypatch.setattr(summary, "_summarize_groq", raise_rate_limit)
 
     def boom(_text):
         raise RuntimeError("chunk 1/6 response truncated: missing section(s) ...")

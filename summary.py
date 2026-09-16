@@ -7,7 +7,7 @@ anything else. Every attempt and fallback is logged.
 """
 
 import ollama
-from groq import Groq
+from groq import Groq, RateLimitError
 
 from config import (
     GROQ_API_KEY,
@@ -393,15 +393,19 @@ def generate_summary(text):
     """Summarize a transcript into a Spanish summary.
 
     Groq gets a short, concise prompt sized to fit its free-tier output-tokens-
-    per-minute limit — chunked first if the transcript is longer than
-    ``GROQ_CHUNK_CHARS`` (see :func:`_summarize_groq_chunked`), sent as one
-    request otherwise. Local Ollama (no such limit) gets the full detailed
-    prompt (executive synthesis, key points, decisions, commitments with
-    owner/deadline, risks, resolved issues, open items, and discrepancies) as
-    a fallback if Groq is unavailable, rejects the request, or its response
-    looks incomplete. Both attribute statements to a speaker only when the
-    transcript makes that identifiable, and never invent names, dates, or
-    facts not present in the text.
+    per-minute (OTPM) limit, sent as a single request first. If Groq rejects
+    that request specifically for being too large for OTPM (``RateLimitError``
+    — a pre-flight rejection based on the request's *estimated* output, which
+    scales with transcript content and not just its length; a transcript well
+    under ``GROQ_CHUNK_CHARS`` can still trigger it), it's retried chunked
+    (see :func:`_summarize_groq_chunked`) instead of falling back immediately.
+    Any other Groq failure — or a chunked retry that also fails — falls back
+    to local Ollama (no OTPM limit), which gets the full detailed prompt
+    (executive synthesis, key points, decisions, commitments with
+    owner/deadline, risks, resolved issues, open items, and discrepancies).
+    Both attribute statements to a speaker only when the transcript makes
+    that identifiable, and never invent names, dates, or facts not present in
+    the text.
 
     Args:
         text: The transcript (or note) to summarize; may be in any language.
@@ -412,15 +416,21 @@ def generate_summary(text):
     """
     if GROQ_API_KEY:
         try:
-            if len(text) > GROQ_CHUNK_CHARS:
-                log(f"Generating summary with Groq ({GROQ_MODEL}, chunked)...")
-                summary = _summarize_groq_chunked(text)
-            else:
-                log(f"Generating summary with Groq ({GROQ_MODEL})...")
-                groq_prompt = _PROMPT_TEMPLATE_GROQ.format(text=text)
-                summary = _summarize_groq(groq_prompt)
+            log(f"Generating summary with Groq ({GROQ_MODEL})...")
+            groq_prompt = _PROMPT_TEMPLATE_GROQ.format(text=text)
+            summary = _summarize_groq(groq_prompt)
             log("Groq summary succeeded.")
             return summary, f"Groq · {GROQ_MODEL}"
+        except RateLimitError as e:
+            log_warning(f"Groq rejected the request as too large for OTPM ({e}); retrying chunked.")
+            try:
+                summary = _summarize_groq_chunked(text)
+                log("Groq summary succeeded (chunked).")
+                return summary, f"Groq · {GROQ_MODEL}"
+            except Exception as e2:  # noqa: BLE001  pylint: disable=broad-exception-caught
+                log_warning(
+                    f"Chunked Groq summary also failed ({e2}); falling back to local Ollama."
+                )
         except Exception as e:  # noqa: BLE001  pylint: disable=broad-exception-caught
             log_warning(f"Groq summary failed ({e}); falling back to local Ollama.")
 

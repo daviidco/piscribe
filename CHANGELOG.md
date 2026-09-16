@@ -17,18 +17,24 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
   summarized it (e.g. `_resumen: Groq · qwen/qwen3.8-27b_`), matching the
   signature already sent with the original Telegram delivery — previously
   this was only visible in that original message or by reading `/logs`.
-- **Chunked Groq summarization** for long transcripts (`summary.py`'s
-  `_summarize_groq_chunked`, new `GROQ_CHUNK_CHARS`/
-  `GROQ_CHUNK_MAX_COMPLETION_TOKENS` config): a transcript longer than
-  `GROQ_CHUNK_CHARS` (default 6000 chars) is split into chunks, each
-  summarized into terse notes with its own small output budget, then combined
-  with one more Groq call into the final structured summary — instead of one
-  request whose estimated output can exceed Groq's free-tier OTPM limit for a
-  long, dense meeting even with the already-concise prompt. If any chunk or
-  the synthesis call fails, the whole attempt is aborted and the FULL
-  transcript falls back to local Ollama, same as before — never a mix of
-  partial Groq content and a local summary. Note this raises the ceiling on
-  how long a meeting Groq can handle; it does not remove the per-minute cap,
+- **Chunked Groq summarization**, retried when a single request gets rejected
+  for exceeding Groq's free-tier output-tokens-per-minute (OTPM) limit
+  (`summary.py`'s `_summarize_groq_chunked`, new `GROQ_CHUNK_CHARS`/
+  `GROQ_CHUNK_MAX_COMPLETION_TOKENS` config). `generate_summary` first tries
+  the normal single-shot concise prompt; only on a `groq.RateLimitError` —
+  Groq's own signal that the request's estimated output is too large — does
+  it retry with the transcript split into `GROQ_CHUNK_CHARS`-sized chunks,
+  each summarized into terse notes with its own small output budget, then
+  combined with one more Groq call into the final structured summary. (An
+  earlier version of this pre-guessed whether to chunk from the transcript's
+  character count; that guess turned out wrong in production — a transcript
+  well under the guessed threshold was still rejected, because Groq's
+  pre-flight estimate tracks content, not just length. Reacting to the actual
+  rejection instead of predicting it sidesteps that entirely.) Any other Groq
+  failure, or a chunked retry that also fails, falls back to local Ollama
+  with the FULL original transcript, same as before — never a mix of partial
+  Groq content and a local summary. This raises the ceiling on how much a
+  single meeting can ask of Groq; it does not remove the per-minute cap,
   since enough chunks fired within the same minute can still exhaust it.
 
 ### Changed
