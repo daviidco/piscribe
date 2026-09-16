@@ -42,6 +42,18 @@ def test_last_ok_at_only_counts_successful_runs():
     assert store.last_ok_at() is not None
 
 
+def test_run_by_id_fetches_the_exact_run_regardless_of_how_many_exist():
+    """run_by_id looks up by the literal id, not by recency/position."""
+    store.init_db()
+    first_id = store.start_run("cron")
+    store.finish_run(first_id, "ok", 0, 0)
+    for _ in range(5):
+        store.finish_run(store.start_run("cron"), "ok", 0, 0)
+
+    assert store.run_by_id(first_id)["id"] == first_id
+    assert store.run_by_id(999999) is None
+
+
 def test_recent_runs_is_newest_first():
     """recent_runs returns rows in descending id order, capped at the limit."""
     store.init_db()

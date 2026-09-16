@@ -208,7 +208,7 @@ def test_history_lists_recent_runs():
 
 
 def test_logs_sends_the_run_log_as_a_document(tmp_path):
-    """/logs attaches the run's log file."""
+    """/logs with no arg attaches the LATEST run's log file."""
     store.init_db()
     logf = tmp_path / "run-x.log"
     logf.write_text("[t] Run 1 started\n[t] Done\n", encoding="utf-8")
@@ -219,6 +219,29 @@ def test_logs_sends_the_run_log_as_a_document(tmp_path):
     asyncio.run(handlers.logs(upd, _ctx()))
 
     assert msg.documents and msg.documents[0][0] == "run-x.log"
+
+
+def test_logs_with_an_id_fetches_that_exact_run_not_the_nth_most_recent(tmp_path):
+    """/logs <id> looks up the run whose id is <id> — the same id shown by
+    /history, /status and every run's own log lines — not "the id-th most
+    recent run" (a real point of confusion: a cron run numbered e.g. #31
+    should be reachable as `/logs 31`, regardless of how many runs exist)."""
+    store.init_db()
+    old_log = tmp_path / "run-old.log"
+    old_log.write_text("primera corrida", encoding="utf-8")
+    new_log = tmp_path / "run-new.log"
+    new_log.write_text("corrida mas reciente", encoding="utf-8")
+
+    old_id = store.start_run("cron", log_path=str(old_log))
+    store.finish_run(old_id, "ok", 1, 1)
+    new_id = store.start_run("cron", log_path=str(new_log))
+    store.finish_run(new_id, "ok", 1, 1)
+    assert new_id != old_id
+
+    upd, msg = _update(_uid())
+    asyncio.run(handlers.logs(upd, _ctx([str(old_id)])))
+
+    assert msg.documents and msg.documents[0][0] == "run-old.log"
 
 
 def test_transcript_sends_the_archived_file(tmp_path):

@@ -63,7 +63,7 @@ HELP_TEXT = (
     "  /status — estado y último run\n"
     "  /recap [n|archivo] — resumen (default 1)\n"
     "  /transcript [n|archivo] — transcripción (archivo)\n"
-    "  /logs [n|errors] — log de la ejecución n\n"
+    "  /logs [id|errors] — log de la corrida #id (ver /history; sin id: la última)\n"
     "  /history [n] — últimas n ejecuciones\n"
     "  /pending — archivos en la carpeta de Drive\n"
     "  /stats — métricas de los últimos 7 días\n"
@@ -295,11 +295,11 @@ async def transcript(update, context):
 
 @authorized
 async def logs(update, context):
-    """/logs [n|errors] — a run's log file, or just its error/warning lines."""
+    """/logs [id|errors] — a run's log file by its id (see /history), or the
+    latest run's if no id is given, or just its error/warning lines."""
     arg = context.args[0].lower() if context.args else None
     only_errors = arg == "errors"
-    offset = int(arg) if (arg and arg.isdigit()) else 1
-    row = store.run_by_offset(offset)
+    row = store.run_by_id(int(arg)) if (arg and arg.isdigit()) else store.last_run()
     if not row or not row["log_path"]:
         await update.message.reply_text("no hay log para esa ejecución.")
         return

@@ -137,12 +137,11 @@ def last_run():
         return dict(row) if row else None
 
 
-def run_by_offset(n=1):
-    """The ``n``-th most recent run (1 = latest) as a dict, or ``None``."""
+def run_by_id(run_id):
+    """A specific run by its id (the ``#N`` shown everywhere else — /history,
+    /status, the post-run report, the run's own log lines), or ``None``."""
     with _connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM runs ORDER BY id DESC LIMIT 1 OFFSET ?", (max(n, 1) - 1,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         return dict(row) if row else None
 
 

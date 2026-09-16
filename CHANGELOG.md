@@ -39,6 +39,12 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
 
 ### Fixed
 
+- `/logs <n>` looked up the `n`-th most recent run instead of the run whose
+  id is literally `n` — confusing, since `/history`, `/status`, the post-run
+  report and every run's own log lines all display the literal id (e.g.
+  `Run 31 started`). `/logs <id>` now looks up that exact id (`store.run_by_id`,
+  replacing `run_by_offset`); `/logs` with no argument still means "the latest
+  run".
 - Both prompts now explicitly require ticket numbers to be written as one
   whole 4-digit number (e.g. `3619`), never split with a dot or a slash
   (`36.19`, `36/19`) — observed in a real summary.
