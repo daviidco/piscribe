@@ -105,6 +105,16 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
 
 ### Fixed
 
+- Every summary's `#`/`##` Markdown headings (`## Resumen`, `## Puntos
+  clave`, ...) showed up as literal text in Telegram, `#` characters and
+  all — Telegram has no heading syntax in any of its Markdown modes (legacy
+  or MarkdownV2), so a raw heading line was never going to render as
+  anything special. `telegram_api.to_telegram_markdown` (shared by the
+  original delivery and `/recap`) now rewrites a heading line to `*bold*`
+  instead — the closest Telegram actually supports, and the same treatment
+  regardless of heading level since Telegram can't distinguish those either.
+  A `#` that isn't the very first thing on a line (e.g. a stray "ticket
+  #3619" reference) is left untouched.
 - **The bot was unresponsive to every other command while `/run`,
   `/runcron`, `/retry` or `/resummarize` was in progress — including
   `/cancel`, exactly when it's most needed.** `python-telegram-bot` defaults

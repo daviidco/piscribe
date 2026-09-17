@@ -136,6 +136,45 @@ def test_post_never_raises_and_logs_a_warning_on_a_network_failure(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# telegram_api.to_telegram_markdown
+# ---------------------------------------------------------------------------
+
+def test_to_telegram_markdown_converts_a_heading_to_bold():
+    """Telegram has no heading syntax in any of its Markdown modes — a raw
+    '## Heading' line would show up completely unstyled, '##' and all."""
+    assert telegram_api.to_telegram_markdown("## Resumen") == "*Resumen*"
+
+
+def test_to_telegram_markdown_collapses_every_heading_level_the_same_way():
+    """Telegram can't distinguish heading levels either, so # through ######
+    all become the same bold treatment."""
+    for level in range(1, 7):
+        heading = "#" * level + " Título"
+        assert telegram_api.to_telegram_markdown(heading) == "*Título*"
+
+
+def test_to_telegram_markdown_handles_headings_and_inline_bold_together():
+    """A heading and an inline **bold** span in the same text both convert,
+    independently of each other."""
+    text = "# Resumen\n**importante** y texto normal\n\n## Puntos clave\n- x"
+    expected = "*Resumen*\n*importante* y texto normal\n\n*Puntos clave*\n- x"
+    assert telegram_api.to_telegram_markdown(text) == expected
+
+
+def test_to_telegram_markdown_leaves_a_mid_line_hash_alone():
+    """A '#' that isn't the very first thing on a line — e.g. a stray ticket
+    reference like "ticket #3619" — is not a heading and must stay literal."""
+    text = "El ticket #3619 quedó bloqueado."
+    assert telegram_api.to_telegram_markdown(text) == text
+
+
+def test_to_telegram_markdown_leaves_ordinary_prose_and_bullets_alone():
+    """Plain prose and '- bullet' list items pass through unchanged."""
+    text = "Texto normal.\n- primer punto\n- segundo punto"
+    assert telegram_api.to_telegram_markdown(text) == text
+
+
+# ---------------------------------------------------------------------------
 # drive.list_pending_files
 # ---------------------------------------------------------------------------
 

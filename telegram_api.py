@@ -48,16 +48,32 @@ def redact(text):
     return out
 
 
+# Only matches when 1-6 '#'s are the very first thing on a line (a Markdown
+# heading) — a '#' appearing mid-line (e.g. a stray "ticket #3619" reference)
+# isn't at the start of a line, so it's left alone.
+_MARKDOWN_HEADING_RE = re.compile(r'^#{1,6} *(.+)$', re.MULTILINE)
+
+
 def to_telegram_markdown(text):
-    """Redact secrets, then rewrite ``**bold**`` to Telegram's own ``*bold*``.
+    """Redact secrets, then adapt Markdown Telegram can't natively render.
+
+    Two rewrites: a ``# Heading``/``## Heading`` line (the summary prompts in
+    ``summary.py`` ask for these) becomes ``*Heading*``, since Telegram's
+    Markdown — neither the legacy mode this project uses nor MarkdownV2 —
+    has no heading syntax at all; a raw ``#`` line would otherwise show up
+    completely unstyled, "##" characters and all. Every heading level
+    collapses to the same bold treatment, since Telegram can't distinguish
+    them either. Second, ``**bold**`` is rewritten to Telegram's own
+    ``*bold*``.
 
     Shared by :func:`send_telegram_message` and any bot command (``/recap``)
     that wants its reply to render the same way the pipeline's original
     delivery does — send the result with ``parse_mode="Markdown"``; sending
     it as plain text (the default for a bot's own ``reply_text``) would show
-    the raw ``_..._``/``*...*`` markers literally instead of rendering them.
+    every one of these markers literally instead of rendering them.
     """
-    return re.sub(r'\*\*(.+?)\*\*', r'*\1*', redact(text))
+    out = _MARKDOWN_HEADING_RE.sub(r'*\1*', redact(text))
+    return re.sub(r'\*\*(.+?)\*\*', r'*\1*', out)
 
 
 def split_message(text, limit=TELEGRAM_MAX_CHARS):
