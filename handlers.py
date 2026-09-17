@@ -153,13 +153,23 @@ def _wait_for_exit(pid, seconds):
         time.sleep(0.1)
 
 
+def _parse_id(arg):
+    """Parse arg as a database id, tolerating an optional leading '#' — the
+    exact format /find and /history display ids in, and what /help's syntax
+    shows, so typing an id back with the '#' included must work."""
+    if arg and arg.lstrip("#").isdigit():
+        return int(arg.lstrip("#"))
+    return None
+
+
 def resolve_file(arg):
-    """Map a command arg (None -> latest, digit -> that file's id, else
+    """Map a command arg (None -> latest, digit/#digit -> that file's id, else
     filename) to a row. A file's id is the ``#N`` shown by ``/find``."""
     if not arg:
         return store.latest_file()
-    if arg.isdigit():
-        return store.file_by_id(int(arg))
+    file_id = _parse_id(arg)
+    if file_id is not None:
+        return store.file_by_id(file_id)
     return store.file_by_name(arg)
 
 
@@ -167,7 +177,7 @@ def _target_filename(context):
     """Resolve a /retry|/resummarize argument to a filename (arg, a file id,
     or the latest file)."""
     arg = context.args[0] if context.args else None
-    if arg and not arg.isdigit():
+    if arg and _parse_id(arg) is None:
         return arg
     row = resolve_file(arg)
     return row["filename"] if row else None
@@ -338,7 +348,8 @@ async def logs(update, context):
     latest run's if no id is given, or just its error/warning lines."""
     arg = context.args[0].lower() if context.args else None
     only_errors = arg == "errors"
-    row = store.run_by_id(int(arg)) if (arg and arg.isdigit()) else store.last_run()
+    run_id = _parse_id(arg)
+    row = store.run_by_id(run_id) if run_id is not None else store.last_run()
     if not row or not row["log_path"]:
         await update.message.reply_text("no hay log para esa ejecución.")
         return

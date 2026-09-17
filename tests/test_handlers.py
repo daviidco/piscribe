@@ -204,6 +204,7 @@ def test_resolve_file_by_id_and_name():
     assert handlers.resolve_file("one.txt")["summary"] == "1"
     assert handlers.resolve_file("missing.txt") is None
     assert handlers.resolve_file("999999") is None
+    assert handlers.resolve_file(f"#{one_id}")["filename"] == "one.txt"
 
 
 class _FakePopen:
@@ -273,6 +274,37 @@ def test_logs_with_an_id_fetches_that_exact_run_not_the_nth_most_recent(tmp_path
     asyncio.run(handlers.logs(upd, _ctx([str(old_id)])))
 
     assert msg.documents and msg.documents[0][0] == "run-old.log"
+
+
+def test_logs_with_a_hash_prefixed_id_matches_the_bare_digit_form(tmp_path):
+    """/logs #<id> — /history and /find display ids with a leading '#', so
+    typing one back exactly as shown must resolve the same run as the bare
+    digit form (`_parse_id` strips the '#' before parsing)."""
+    store.init_db()
+    logf = tmp_path / "run-hash.log"
+    logf.write_text("corrida buscada por hash", encoding="utf-8")
+    rid = store.start_run("cron", log_path=str(logf))
+    store.finish_run(rid, "ok", 1, 1)
+
+    upd, msg = _update(_uid())
+    asyncio.run(handlers.logs(upd, _ctx([f"#{rid}"])))
+
+    assert msg.documents and msg.documents[0][0] == "run-hash.log"
+
+
+def test_logs_errors_is_not_misparsed_as_an_id(tmp_path):
+    """/logs errors must still filter the latest run's log, not be treated as
+    (and fail to parse as) an id."""
+    store.init_db()
+    logf = tmp_path / "run-err.log"
+    logf.write_text("[t] INFO fine\n[t] ERROR boom\n", encoding="utf-8")
+    rid = store.start_run("cron", log_path=str(logf))
+    store.finish_run(rid, "error", 1, 0)
+
+    upd, msg = _update(_uid())
+    asyncio.run(handlers.logs(upd, _ctx(["errors"])))
+
+    assert msg.texts and "ERROR boom" in msg.texts[0] and "INFO fine" not in msg.texts[0]
 
 
 def test_transcript_sends_the_archived_file(tmp_path):
@@ -396,6 +428,24 @@ def test_retry_with_a_digit_targets_that_files_id_not_a_position(monkeypatch):
 
     env = _FakePopen.last.env
     assert env["PISCRIBE_ONLY"] == "older.mp4"
+
+
+def test_retry_with_a_hash_prefixed_id_targets_that_files_id(monkeypatch):
+    """/retry #<id> — the exact form /find shows — must resolve by id, not be
+    treated as a literal filename (the regression behind the 'processed/#44
+    directory not found' rclone failure)."""
+    store.init_db()
+    rid = store.start_run("cron")
+    store.record_file(rid, "hashed.mp4", "video", "error", error="x")
+    hashed_id = store.file_by_name("hashed.mp4")["id"]
+    monkeypatch.setattr(handlers.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(handlers, "current_run_pid", lambda: None)
+
+    upd, _msg = _update(_uid())
+    asyncio.run(handlers.retry(upd, _ctx([f"#{hashed_id}"])))
+
+    env = _FakePopen.last.env
+    assert env["PISCRIBE_ONLY"] == "hashed.mp4"
 
 
 def test_run_is_refused_while_a_run_holds_the_lock(monkeypatch):

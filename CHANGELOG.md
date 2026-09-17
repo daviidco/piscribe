@@ -105,6 +105,15 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
 
 ### Fixed
 
+- `/retry #44` (and `/resummarize`, `/logs` with a `#`-prefixed id) failed —
+  `"#44".isdigit()` is `False`, so the id branch was never reached and `#44`
+  fell through to being treated as a literal filename, which then made
+  `rclone` look for a nonexistent Drive folder named `processed/#44`. This
+  was a self-inflicted regression: `/find` and `/history` display ids with a
+  leading `#`, and `/help` documents the argument as `#id`, so typing one
+  back exactly as shown was the natural thing to do. Fixed with a shared
+  `handlers._parse_id` helper that strips an optional leading `#` before
+  parsing, used by `resolve_file`, `_target_filename` and `/logs`.
 - Every summary's `#`/`##` Markdown headings (`## Resumen`, `## Puntos
   clave`, ...) showed up as literal text in Telegram, `#` characters and
   all — Telegram has no heading syntax in any of its Markdown modes (legacy
