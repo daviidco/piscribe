@@ -239,6 +239,26 @@ def test_history_lists_recent_runs():
     assert msg.texts and f"#{rid}" in msg.texts[0] and "2/2" in msg.texts[0]
 
 
+def test_history_includes_each_runs_file_ids():
+    """/history lists the id(s) of the file(s) each run processed, so a file
+    can be /retry'd straight from here without a /find search term."""
+    store.init_db()
+    rid = store.start_run("manual")
+    store.record_file(rid, "reunion.mp4", "video", "ok", summary="s")
+    file_id = store.file_by_name("reunion.mp4")["id"]
+    store.finish_run(rid, "ok", 1, 1)
+    empty_rid = store.start_run("cron")
+    store.finish_run(empty_rid, "ok", 0, 0)
+
+    upd, msg = _update(_uid())
+    asyncio.run(handlers.history(upd, _ctx()))
+
+    text = "\n".join(msg.texts)
+    assert f"#{file_id} reunion.mp4" in text
+    empty_line = next(ln for ln in text.splitlines() if ln.startswith(f"#{empty_rid} "))
+    assert "·" not in empty_line
+
+
 def test_logs_sends_the_run_log_as_a_document(tmp_path):
     """/logs with no arg attaches the LATEST run's log file."""
     store.init_db()

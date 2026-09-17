@@ -103,7 +103,8 @@ def _format_help_commands():
 HELP_TEXT = (
     "*Piscribe Control bot*\n\n"
     "«#id» es siempre un id real de la base — nunca una posición.\n"
-    "El de una corrida sale de /history; el de un archivo, de /find.\n"
+    "El de una corrida sale de /history; el de un archivo, de /history "
+    "(junto a cada corrida) o de /find.\n"
     "«n» en /history es la cantidad de corridas a mostrar, no un id.\n\n"
     f"{_format_help_commands()}"
 )
@@ -372,18 +373,26 @@ async def logs(update, context):
 
 @authorized
 async def history(update, context):
-    """/history [n] — a compact list of recent runs."""
+    """/history [n] — a compact list of recent runs, each with the id(s) of
+    the file(s) it processed, so a file can be /retry'd straight from here
+    without having to think of a search term for /find."""
     n = int(context.args[0]) if (context.args and context.args[0].isdigit()) else 10
     rows = store.recent_runs(min(n, 30))
     if not rows:
         await update.message.reply_text("sin ejecuciones registradas.")
         return
-    lines = [
-        f"#{r['id']} {r['started_at']} {r['trigger']:<6} {r['status']:<9} "
-        f"{r['files_ok']}/{r['files_total']}"
-        for r in rows
-    ]
-    await update.message.reply_text("\n".join(lines))
+    lines = []
+    for r in rows:
+        line = (
+            f"#{r['id']} {r['started_at']} {r['trigger']:<6} {r['status']:<9} "
+            f"{r['files_ok']}/{r['files_total']}"
+        )
+        files = store.files_for_run(r["id"])
+        if files:
+            line += " · " + ", ".join(f"#{f['id']} {f['filename']}" for f in files)
+        lines.append(line)
+    for part in split_message("\n".join(lines)):
+        await update.message.reply_text(part)
 
 
 @authorized

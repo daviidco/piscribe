@@ -11,6 +11,13 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
 
 ### Added
 
+- `/history` now lists the id(s) and filename(s) of the file(s) each run
+  processed, e.g. `#44 2026-09-17 17:02:51 manual ok 1/1 · #12 reunion.mp4` —
+  previously the only way to get a file's id for `/retry`/`/recap`/etc. was
+  `/find <texto>`, which needs a search term the user may not have (e.g. when
+  all they remember is which *run* it was). A run's own id (shown first) and
+  a file's id (shown after `·`) are still two different, unrelated sequences
+  — `/retry` needs the latter.
 - `/help`'s command list now renders as an aligned, monospace table (a
   Markdown ```` ``` ```` code block, sent with `parse_mode="Markdown"`) with
   every description starting at the same column — plain spaces don't align

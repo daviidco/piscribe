@@ -178,6 +178,15 @@ def file_by_id(file_id):
         return dict(row) if row else None
 
 
+def files_for_run(run_id):
+    """All file rows recorded for ``run_id``, in processing order."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM files WHERE run_id = ? ORDER BY id", (run_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def file_by_name(name):
     """Most recent file row whose ``filename`` matches ``name``, or ``None``."""
     with _connect() as conn:
