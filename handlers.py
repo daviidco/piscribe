@@ -57,29 +57,55 @@ def _status_label(raw_status):
 _LOG_LEVEL_RE = re.compile(r"^\[[^\]]*\]\s+(WARNING|ERROR)\b")
 
 
+# (command, description) pairs, grouped by section — kept as data so the
+# column width below is computed, not hand-counted, and stays correct if a
+# command is ever renamed or added.
+_HELP_COMMANDS = (
+    ("consulta", (
+        ("/status", "estado y último run"),
+        ("/recap [#id|archivo]", "resumen"),
+        ("/transcript [#id|archivo]", "transcripción"),
+        ("/logs [#id|errors]", "log de la corrida"),
+        ("/history [n]", "últimas n corridas"),
+        ("/pending", "archivos en la carpeta de Drive"),
+        ("/stats", "métricas de los últimos 7 días"),
+        ("/find <texto>", "buscar en resúmenes/archivos"),
+        ("/version", "versión y modelo"),
+        ("/whoami", "tu id de Telegram"),
+    )),
+    ("control", (
+        ("/run [archivo]", "ejecutar ahora (solo para vos)"),
+        ("/runcron [archivo]", "igual, pero avisa a todo el equipo"),
+        ("/retry [#id|archivo]", "reprocesar desde 'processed'"),
+        ("/resummarize [#id|archivo]", "rehacer solo el resumen"),
+        ("/cancel", "detener el run en curso"),
+        ("/pause /resume", "pausar/reactivar los runs"),
+    )),
+)
+
+
+def _format_help_commands():
+    """Right-pad every command to the widest one so descriptions line up.
+
+    Plain spaces only align in a monospace font, so this is wrapped in a
+    Markdown code block (```...```) — Telegram's normal message font is
+    proportional and would collapse the padding otherwise.
+    """
+    width = max(len(cmd) for _, rows in _HELP_COMMANDS for cmd, _ in rows)
+    lines = []
+    for section, rows in _HELP_COMMANDS:
+        lines.append(f"{section}:")
+        lines.extend(f"  {cmd.ljust(width)}  {desc}" for cmd, desc in rows)
+        lines.append("")
+    return "```\n" + "\n".join(lines).rstrip() + "\n```"
+
+
 HELP_TEXT = (
-    "Piscribe Control bot\n\n"
+    "*Piscribe Control bot*\n\n"
     "«#id» es siempre un id real de la base — nunca una posición.\n"
     "El de una corrida sale de /history; el de un archivo, de /find.\n"
     "«n» en /history es la cantidad de corridas a mostrar, no un id.\n\n"
-    "consulta:\n"
-    "  /status — estado y último run\n"
-    "  /recap [#id|archivo] — resumen\n"
-    "  /transcript [#id|archivo] — transcripción\n"
-    "  /logs [#id|errors] — log de la corrida\n"
-    "  /history [n] — las últimas n corridas\n"
-    "  /pending — archivos en la carpeta de Drive\n"
-    "  /stats — métricas de los últimos 7 días\n"
-    "  /find <texto> — buscar en resúmenes/archivos\n"
-    "  /version — versión y modelo\n"
-    "  /whoami — tu id de Telegram\n\n"
-    "control:\n"
-    "  /run [archivo] — ejecutar ahora (avisos solo para vos)\n"
-    "  /runcron [archivo] — igual que /run, pero avisa a todo el equipo\n"
-    "  /retry [#id|archivo] — reprocesar desde 'processed'\n"
-    "  /resummarize [#id|archivo] — rehacer solo el resumen\n"
-    "  /cancel — detener el run en curso\n"
-    "  /pause /resume — pausar/reactivar los runs"
+    f"{_format_help_commands()}"
 )
 
 
@@ -206,7 +232,7 @@ async def help_(update, context):
     user = update.effective_user
     if user is None or str(user.id) not in config.TG_CHAT_IDS:
         return
-    await update.message.reply_text(HELP_TEXT)
+    await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
 
 
 async def whoami(update, context):

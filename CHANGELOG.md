@@ -11,6 +11,13 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
 
 ### Added
 
+- `/help`'s command list now renders as an aligned, monospace table (a
+  Markdown ```` ``` ```` code block, sent with `parse_mode="Markdown"`) with
+  every description starting at the same column — plain spaces don't align
+  anything in Telegram's normal proportional-font messages, which is why the
+  old plain-text list never lined up. The column width is computed from
+  `_HELP_COMMANDS` (a plain list of command/description pairs) rather than
+  hand-counted, so it can't drift out of alignment if a command is renamed.
 - `/runcron [file]` — same as `/run`, but forces `PISCRIBE_TRIGGER=cron` so
   the run broadcasts its progress/result to every chat in `TG_CHAT_IDS`
   (`pipeline._targets`) instead of only to whoever asked, and shows up in

@@ -114,6 +114,28 @@ def test_authorized_allows_listed_ids():
     assert msg.texts and "run en curso" in msg.texts[0]
 
 
+def test_help_sends_markdown_with_a_code_block():
+    """/help renders with parse_mode=Markdown — needed for the ``` block to
+    actually show up monospace, since plain spaces don't align anything in
+    Telegram's normal proportional-font messages."""
+    upd, msg = _update(int(config.TG_CHAT_IDS[0]))
+    asyncio.run(handlers.help_(upd, _ctx()))
+
+    assert msg.texts and msg.parse_modes == ["Markdown"]
+    assert msg.texts[0].count("```") == 2
+
+
+def test_help_command_columns_are_aligned():
+    """Every command is padded to the same width, so every description
+    starts at the same column regardless of how long its command is."""
+    width = max(len(cmd) for _, rows in handlers._HELP_COMMANDS for cmd, _ in rows)
+    block = handlers._format_help_commands()
+    command_lines = [line for line in block.splitlines() if line.startswith("  /")]
+
+    assert len(command_lines) >= 10  # sanity: didn't accidentally match nothing
+    assert all(line[2 + width:2 + width + 2] == "  " for line in command_lines)
+
+
 def test_recap_returns_the_stored_summary():
     """/recap with no args sends the most recent file's summary."""
     store.init_db()
