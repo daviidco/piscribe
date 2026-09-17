@@ -98,6 +98,24 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
 
 ### Fixed
 
+- **The bot was unresponsive to every other command while `/run`,
+  `/runcron`, `/retry` or `/resummarize` was in progress — including
+  `/cancel`, exactly when it's most needed.** `python-telegram-bot` defaults
+  to `concurrent_updates=False`: it processes updates one at a time and
+  won't even dequeue the next one until the current handler's coroutine
+  fully returns, regardless of `_spawn_and_report` awaiting the spawned
+  `pipeline.py` via a non-blocking `run_in_executor`. Since a run can take
+  minutes, `/status`/`/help`/anything else — and especially `/cancel` for a
+  run that's stuck or taking too long — would just sit queued until the run
+  finished on its own. Fixed with `.concurrent_updates(True)` on the
+  `Application.builder()` in `bot.py`. Verified safe: `store.py` opens a
+  fresh SQLite connection per call (WAL mode, built for concurrent
+  readers/writers) rather than sharing one, so there's no in-memory state a
+  concurrent handler could corrupt; the one theoretical race (two
+  `/run`-family commands both passing `_spawn_and_report`'s PID check before
+  either spawns) is already covered by `pipeline.py`'s own cross-process
+  file lock (`runlock.py`), which just makes the second process notice the
+  lock is held and exit quietly.
 - `/recap` sent its replies via `update.message.reply_text` with no
   `parse_mode`, so the `_transcripción: ..._`/`_resumen: ..._` signature (and
   any Markdown in the summary itself, like `**bold**`) showed up as literal

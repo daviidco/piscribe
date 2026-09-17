@@ -27,11 +27,25 @@ _QUIET_LOGGERS = ("httpx", "httpcore", "apscheduler")
 
 
 def build_app():
-    """Wire up the command handlers, the health check, and the startup ping."""
+    """Wire up the command handlers, the health check, and the startup ping.
+
+    ``concurrent_updates(True)``: python-telegram-bot's default
+    (``False``) processes updates one at a time — the next command isn't
+    even picked off the queue until the current handler's coroutine fully
+    returns. ``/run``/``/runcron``/``/retry``/``/resummarize`` await a
+    spawned ``pipeline.py`` that can run for minutes, so without this,
+    *every other command — including `/cancel` — is unresponsive for that
+    whole time*, exactly when `/cancel` is most likely to be needed. Running
+    updates concurrently fixes that; the risk of two `/run`-family commands
+    racing into `_spawn_and_report`'s PID check is already covered by
+    ``pipeline.py``'s own cross-process file lock (``runlock.py``), which
+    lets a second process notice the lock is held and exit quietly.
+    """
     store.init_db()
     app = (
         Application.builder()
         .token(TG_TOKEN)
+        .concurrent_updates(True)
         .post_init(handlers.post_init)
         .build()
     )
