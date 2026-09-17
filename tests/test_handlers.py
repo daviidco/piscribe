@@ -20,11 +20,13 @@ class _Msg:
 
     def __init__(self):
         self.texts = []
+        self.parse_modes = []
         self.documents = []
 
-    async def reply_text(self, text, **_kw):
-        """Record a text reply."""
+    async def reply_text(self, text, **kw):
+        """Record a text reply, and the parse_mode it was sent with (if any)."""
         self.texts.append(text)
+        self.parse_modes.append(kw.get("parse_mode"))
 
     async def reply_document(self, _doc, filename=None, caption=None, **_kw):
         """Record a document reply (filename + caption only)."""
@@ -142,6 +144,10 @@ def test_recap_signs_the_summary_with_its_engines():
     text = "\n".join(msg.texts)
     assert "_transcripción: Groq · whisper-large-v3_" in text
     assert "_resumen: local · Ollama test-qwen_" in text
+    # Both replies must render as Markdown, or the "_..._" signature shows up
+    # as literal underscores instead of italics — reply_text defaults to
+    # plain text unless parse_mode is passed explicitly.
+    assert msg.parse_modes == ["Markdown", "Markdown"]
 
 
 def test_recap_omits_the_transcription_line_for_text_files():

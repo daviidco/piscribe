@@ -48,6 +48,18 @@ def redact(text):
     return out
 
 
+def to_telegram_markdown(text):
+    """Redact secrets, then rewrite ``**bold**`` to Telegram's own ``*bold*``.
+
+    Shared by :func:`send_telegram_message` and any bot command (``/recap``)
+    that wants its reply to render the same way the pipeline's original
+    delivery does — send the result with ``parse_mode="Markdown"``; sending
+    it as plain text (the default for a bot's own ``reply_text``) would show
+    the raw ``_..._``/``*...*`` markers literally instead of rendering them.
+    """
+    return re.sub(r'\*\*(.+?)\*\*', r'*\1*', redact(text))
+
+
 def split_message(text, limit=TELEGRAM_MAX_CHARS):
     """Yield chunks of ``text`` no longer than ``limit``, breaking on newlines.
 
@@ -105,7 +117,7 @@ def send_telegram_message(text, chat_ids=None):
             every chat in ``TG_CHAT_IDS`` — pass a narrower list (e.g. a
             single requester's id) to keep an on-demand message private.
     """
-    tg_text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', redact(text))
+    tg_text = to_telegram_markdown(text)
     targets = TG_CHAT_IDS if chat_ids is None else chat_ids
     for part in split_message(tg_text):
         _post("sendMessage", {"parse_mode": "Markdown", "text": part}, targets)

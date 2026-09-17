@@ -30,7 +30,7 @@ import config
 import store
 from drive import list_pending_files
 from runlock import current_run_pid
-from telegram_api import redact, split_message
+from telegram_api import redact, split_message, to_telegram_markdown
 
 log = logging.getLogger("piscribe.bot")
 
@@ -266,8 +266,9 @@ async def recap(update, context):
             f"{row['filename']}: sin resumen (status {row['status']})."
         )
         return
-    for part in split_message(f"📋 {row['filename']}\n\n{row['summary']}"):
-        await update.message.reply_text(part)
+    summary_text = to_telegram_markdown(f"📋 {row['filename']}\n\n{row['summary']}")
+    for part in split_message(summary_text):
+        await update.message.reply_text(part, parse_mode="Markdown")
 
     # Sent as its own message, after the summary — same reasoning as the
     # pipeline's original delivery (see pipeline._signature_message): a long
@@ -278,7 +279,9 @@ async def recap(update, context):
     if row["summarize_backend"]:
         sig_lines.append(f"_resumen: {row['summarize_backend']}_")
     if sig_lines:
-        await update.message.reply_text("\n".join(sig_lines))
+        await update.message.reply_text(
+            to_telegram_markdown("\n".join(sig_lines)), parse_mode="Markdown"
+        )
 
 
 @authorized

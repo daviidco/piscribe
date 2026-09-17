@@ -88,6 +88,16 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
 
 ### Fixed
 
+- `/recap` sent its replies via `update.message.reply_text` with no
+  `parse_mode`, so the `_transcripción: ..._`/`_resumen: ..._` signature (and
+  any Markdown in the summary itself, like `**bold**`) showed up as literal
+  underscores/asterisks instead of rendering — unlike the original pipeline
+  delivery, which explicitly sends with `parse_mode="Markdown"`. Both of
+  `/recap`'s replies now go through the same `to_telegram_markdown` step
+  (new shared helper in `telegram_api.py`, extracted from
+  `send_telegram_message`) and are sent with `parse_mode="Markdown"`, so a
+  file looks the same whether you're reading its original delivery or
+  pulling it back up later with `/recap`.
 - **Critical**: `telegram_api._post` sent every outbound field (the summary
   text, its Markdown signature, a log's caption, ...) via curl's `-F`
   (multipart), which treats a bare `;` inside a value as the start of an
