@@ -1,8 +1,8 @@
 """Regression tests for the piscribe pipeline.
 
 These mirror the scenarios from the manual end-to-end simulation: every external
-tool (rclone, ffmpeg, whisper, Ollama, curl) is stubbed, so nothing here touches
-the network or any path outside the test sandbox.
+tool or client (rclone, ffmpeg, whisper, Ollama, the Telegram HTTP client) is
+stubbed, so nothing here touches the network or any path outside the test sandbox.
 """
 
 # A test that receives a fixture by name necessarily shadows the fixture
@@ -13,6 +13,7 @@ the network or any path outside the test sandbox.
 
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 import drive
@@ -21,6 +22,11 @@ import store
 import telegram_api
 import video
 from runlock import run_lock
+
+# Captured at collection time, before conftest's autouse `_no_real_telegram_calls`
+# fixture overwrites telegram_api._post for the duration of each test — the two
+# _post tests below need the real implementation, not that no-op stand-in.
+_real_telegram_post = telegram_api._post
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +55,84 @@ def test_split_message_hard_cuts_a_line_with_no_newline():
 
     assert [len(p) for p in parts] == [4000, 4000, 1000]
     assert "".join(parts) == text
+
+
+# ---------------------------------------------------------------------------
+# telegram_api._post
+# ---------------------------------------------------------------------------
+
+class _FakeHttpxResponse:  # pylint: disable=too-few-public-methods
+    """Stand-in for httpx.Response — just enough for _post's success check."""
+
+    is_success = True
+
+    def json(self):
+        """Always report Telegram-style success."""
+        return {"ok": True}
+
+
+def test_post_sends_a_semicolon_containing_value_intact(monkeypatch):
+    """A semicolon in a field's value must reach httpx's payload unmodified.
+
+    This was never guaranteed with the previous curl-based _post: curl's -F
+    multipart syntax treats a bare ';' inside a value as the start of an
+    extra parameter clause and silently truncates the field there —
+    confirmed against a real curl invocation (`-F "text=a; b"` reached the
+    server as just "a", `b` gone, no error anywhere). httpx has no such
+    ambiguity since it isn't building a hand-rolled command line at all."""
+    captured = []
+    monkeypatch.setattr(
+        telegram_api._client, "post",
+        lambda url, data=None, files=None: captured.append((url, data, files))
+        or _FakeHttpxResponse(),
+    )
+
+    _real_telegram_post(
+        "sendMessage", {"parse_mode": "Markdown", "text": "hola; sigue despues"}, ["123"]
+    )
+
+    assert len(captured) == 1
+    _url, data, files = captured[0]
+    assert data["text"] == "hola; sigue despues"
+    assert data["chat_id"] == "123"
+    assert files is None
+
+
+def test_post_sends_a_file_upload_via_files_not_data(monkeypatch):
+    """A file upload (send_document's use case) goes through httpx's files=
+    parameter as raw bytes, not folded into the plain data= fields."""
+    captured = []
+    monkeypatch.setattr(
+        telegram_api._client, "post",
+        lambda url, data=None, files=None: captured.append((url, data, files))
+        or _FakeHttpxResponse(),
+    )
+
+    _real_telegram_post(
+        "sendDocument", {"caption": "a; b"}, ["123"],
+        files={"document": ("run-x.log", b"contenido del log")},
+    )
+
+    assert len(captured) == 1
+    _url, data, files = captured[0]
+    assert data == {"chat_id": "123", "caption": "a; b"}
+    assert files == {"document": ("run-x.log", b"contenido del log")}
+
+
+def test_post_never_raises_and_logs_a_warning_on_a_network_failure(monkeypatch):
+    """A network error (or a non-'ok' response) is logged, never raised — a
+    failed notification shouldn't crash a pipeline run."""
+
+    def boom(_url, data=None, files=None):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(telegram_api._client, "post", boom)
+    warnings = []
+    monkeypatch.setattr(telegram_api, "log_warning", warnings.append)
+
+    _real_telegram_post("sendMessage", {"text": "hola"}, ["123"])  # must not raise
+
+    assert warnings and "sendMessage" in warnings[0]
 
 
 # ---------------------------------------------------------------------------

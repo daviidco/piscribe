@@ -1,12 +1,25 @@
 """Outbound Telegram Bot API helpers used by the pipeline.
 
-Kept dependency-free (shells out to ``curl``) and separate from ``bot.py``,
-which owns the inbound long-polling side with ``python-telegram-bot``. Named
-``telegram_api`` rather than ``telegram`` to avoid shadowing that package.
+Separate from ``bot.py``, which owns the inbound long-polling side with
+``python-telegram-bot``. Named ``telegram_api`` rather than ``telegram`` to
+avoid shadowing that package.
+
+Uses ``httpx`` directly rather than ``python-telegram-bot``'s own (async)
+``Bot`` object: this module is called from ``pipeline.py``, a plain
+synchronous script invoked fresh by cron or on demand, not the long-lived
+async bot process. An earlier version of this module shelled out to ``curl``
+instead of using an HTTP library at all — that hand-rolled approach was the
+source of a real bug: curl's multipart ``-F`` syntax treats a bare ``;``
+inside a field's value as the start of an extra parameter clause
+(``;type=...``), silently truncating the field right there, which ordinary
+LLM-written prose (summaries routinely contain semicolons) hit constantly.
+``httpx`` encodes form/multipart bodies correctly by construction.
 """
 
 import re
-import subprocess
+from pathlib import Path
+
+import httpx
 
 import config
 from config import TG_CHAT_IDS, TG_TOKEN
@@ -15,6 +28,11 @@ from utils import log_warning
 # Telegram rejects a sendMessage text longer than 4096 UTF-16 code units; stay
 # safely under that so long summaries are split instead of dropped.
 TELEGRAM_MAX_CHARS = 4000
+
+# Module-level and reused across calls: cheap connection reuse for the several
+# messages one pipeline.py run can send (stage pings, the summary, its
+# signature), and for bot.py's entire process lifetime if it ever calls in here.
+_client = httpx.Client(timeout=10.0)
 
 
 def redact(text):
@@ -45,17 +63,34 @@ def split_message(text, limit=TELEGRAM_MAX_CHARS):
         yield text
 
 
-def _post(method, fields, chat_ids):
-    """POST form ``fields`` to a Bot API ``method`` for each of ``chat_ids``."""
+def _post(method, data, chat_ids, files=None):
+    """POST ``data`` (and optional ``files``) to a Bot API ``method`` for each
+    of ``chat_ids``.
+
+    A failure (network error, non-2xx response, or a JSON body without
+    ``"ok": true``) is only logged, never raised — a failed notification
+    shouldn't crash a pipeline run.
+
+    Args:
+        method: Bot API method name, e.g. ``"sendMessage"``.
+        data: Form fields as a dict (``chat_id`` is added automatically).
+        chat_ids: Chat ids to send this to, one request per id.
+        files: Optional ``httpx``-style files dict for a multipart upload,
+            e.g. ``{"document": (filename, bytes_content)}`` — see
+            :func:`send_document`. Passing bytes rather than an open file
+            handle matters here: a handle would be exhausted after the first
+            of possibly several chat ids.
+    """
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/{method}"
     for chat_id in chat_ids:
-        args = ["curl", "-s", "-X", "POST",
-                f"https://api.telegram.org/bot{TG_TOKEN}/{method}",
-                "-F", f"chat_id={chat_id}"]
-        for key, value in fields:
-            args += ["-F", f"{key}={value}"]
-        result = subprocess.run(args, capture_output=True, text=True, check=False)
-        if '"ok":true' not in result.stdout:
-            log_warning(f"possible error calling {method} for {chat_id}: {result.stdout}")
+        payload = {"chat_id": chat_id, **data}
+        try:
+            response = _client.post(url, data=payload, files=files)
+            ok = response.is_success and response.json().get("ok")
+        except httpx.HTTPError as e:
+            ok, response = False, e
+        if not ok:
+            log_warning(f"possible error calling {method} for {chat_id}: {response}")
 
 
 def send_telegram_message(text, chat_ids=None):
@@ -73,7 +108,7 @@ def send_telegram_message(text, chat_ids=None):
     tg_text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', redact(text))
     targets = TG_CHAT_IDS if chat_ids is None else chat_ids
     for part in split_message(tg_text):
-        _post("sendMessage", [("parse_mode", "Markdown"), ("text", part)], targets)
+        _post("sendMessage", {"parse_mode": "Markdown", "text": part}, targets)
 
 
 def send_document(path, caption="", chat_ids=None):
@@ -85,4 +120,8 @@ def send_document(path, caption="", chat_ids=None):
         chat_ids: Chat ids to send to; ``None`` broadcasts to every configured chat.
     """
     targets = TG_CHAT_IDS if chat_ids is None else chat_ids
-    _post("sendDocument", [("document", f"@{path}"), ("caption", caption)], targets)
+    content = Path(path).read_bytes()
+    _post(
+        "sendDocument", {"caption": caption}, targets,
+        files={"document": (Path(path).name, content)},
+    )

@@ -3,6 +3,3 @@
 -r requirements.txt
 pytest==9.1.1
 pylint==4.0.8
-# Only test_summary.py imports this directly, to build a real groq.RateLimitError
-# for its fixtures; otherwise it's just a transitive dependency of groq.
-httpx==0.28.1

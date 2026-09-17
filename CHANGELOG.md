@@ -81,6 +81,30 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
 
 ### Fixed
 
+- **Critical**: `telegram_api._post` sent every outbound field (the summary
+  text, its Markdown signature, a log's caption, ...) via curl's `-F`
+  (multipart), which treats a bare `;` inside a value as the start of an
+  extra parameter clause (`;type=...`, `;filename=...`) and silently
+  truncates the field right there — no error anywhere, the run just finishes
+  `ok`. Confirmed against a real curl invocation: `-F "text=a; b"` reaches
+  the server as `text=a`, `b` gone without a trace. This is almost certainly
+  the real cause behind several "the summary arrived cut off" reports this
+  session that were chased down other paths (Groq's OTPM limit,
+  missing-section detection, local's language drift) without success,
+  because a semicolon in ordinary prose — extremely common in any real
+  meeting summary — was truncating the message on its way out regardless of
+  how complete the generated text actually was (confirmed via `/recap`,
+  which reads the same stored summary through a different send path and
+  printed it in full). Fixed by removing `curl`/`subprocess` from
+  `telegram_api.py` entirely in favor of `httpx` (already a resolved
+  dependency, now a direct one — see `requirements.txt`): plain fields go
+  through `httpx`'s own form encoding, immune to this whole class of bug by
+  construction, and the one real file upload (`send_document`) uses `httpx`'s
+  `files=` with the content read into memory once, rather than a `curl -F
+  @path` reference — both verified end-to-end against a local echo server
+  with semicolons in every field, including the upload's caption (which an
+  interim `-F`-for-uploads-only fix, since superseded, would not have
+  covered either).
 - The local fallback prompt (`_PROMPT_TEMPLATE`, used by Ollama's `qwen3:1.7b`
   when Groq is unavailable or rejects the request) now states the "always
   respond in Spanish" requirement twice — once up front, once again in the
