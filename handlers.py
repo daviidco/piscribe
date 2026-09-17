@@ -71,7 +71,8 @@ HELP_TEXT = (
     "  /version — versión y modelo\n"
     "  /whoami — tu id de Telegram\n\n"
     "control:\n"
-    "  /run [archivo] — ejecutar ahora\n"
+    "  /run [archivo] — ejecutar ahora (avisos solo para vos)\n"
+    "  /runcron [archivo] — igual que /run, pero avisa a todo el equipo\n"
     "  /retry [n|archivo] — reprocesar desde 'processed'\n"
     "  /resummarize [n|archivo] — rehacer solo el resumen\n"
     "  /cancel — detener el run en curso\n"
@@ -142,7 +143,11 @@ def _target_filename(context):
 
 
 async def _spawn_and_report(update, env_extra, announce=None, *, own_messages=False):
-    """Spawn pipeline.py (manual trigger) with ``env_extra``, then post the result.
+    """Spawn pipeline.py with ``env_extra``, then post the result.
+
+    Defaults to ``PISCRIBE_TRIGGER=manual``; ``env_extra`` is merged in last,
+    so ``/runcron`` overriding it to ``"cron"`` (to broadcast instead of
+    notifying only the requester) works without any special-casing here.
 
     ``own_messages=True`` (used by ``/run``) skips both the pre-announce and
     the post-run report: ``run_pipeline`` posts the same start/stage/failure/
@@ -387,9 +392,28 @@ async def run(update, context):
     """/run [archivo] — process the pending folder now (or one pending file).
 
     No bot-side announce/report here: pipeline.py posts the same
-    start/stage/failure/end messages a cron pass would.
+    start/stage/failure/end messages a cron pass would. Every message from
+    this run goes ONLY to whoever asked (see pipeline._targets) — use
+    /runcron instead if the result should reach the whole team.
     """
     extra = {"PISCRIBE_ONLY": context.args[0]} if context.args else {}
+    await _spawn_and_report(update, extra, own_messages=True)
+
+
+@authorized
+async def runcron(update, context):
+    """/runcron [archivo] — like /run, but broadcasts to every configured
+    chat (TG_CHAT_IDS) instead of only to whoever asked.
+
+    Forces ``PISCRIBE_TRIGGER=cron`` so pipeline._targets treats this exactly
+    like an automated cron pass for audience purposes (see also /history,
+    where it shows up indistinguishable from a real cron run — that's the
+    point). ``PISCRIBE_BY`` is still recorded, so the run's requester is not
+    lost from the store even though the trigger reads "cron".
+    """
+    extra = {"PISCRIBE_TRIGGER": "cron"}
+    if context.args:
+        extra["PISCRIBE_ONLY"] = context.args[0]
     await _spawn_and_report(update, extra, own_messages=True)
 
 

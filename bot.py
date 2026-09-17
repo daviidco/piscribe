@@ -47,6 +47,7 @@ def build_app():
     app.add_handler(CommandHandler("stats", handlers.stats))
     app.add_handler(CommandHandler("find", handlers.find))
     app.add_handler(CommandHandler("run", handlers.run))
+    app.add_handler(CommandHandler("runcron", handlers.runcron))
     app.add_handler(CommandHandler("retry", handlers.retry))
     app.add_handler(CommandHandler("resummarize", handlers.resummarize))
     app.add_handler(CommandHandler("cancel", handlers.cancel))

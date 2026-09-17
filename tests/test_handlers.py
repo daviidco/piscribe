@@ -276,6 +276,39 @@ def test_run_spawns_pipeline_with_manual_env(monkeypatch):
     assert not msg.texts
 
 
+def test_runcron_spawns_pipeline_with_trigger_forced_to_cron(monkeypatch):
+    """/runcron overrides PISCRIBE_TRIGGER to 'cron' (so pipeline._targets
+    broadcasts to every configured chat instead of just the caller) while
+    still recording who actually asked for it via PISCRIBE_BY."""
+    store.init_db()
+    monkeypatch.setattr(handlers.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(handlers, "current_run_pid", lambda: None)
+
+    upd, msg = _update(_uid())
+    asyncio.run(handlers.runcron(upd, _ctx(["reunion.mp4"])))
+
+    env = _FakePopen.last.env
+    assert env["PISCRIBE_TRIGGER"] == "cron"
+    assert env["PISCRIBE_BY"] == str(_uid())
+    assert env["PISCRIBE_ONLY"] == "reunion.mp4"
+    assert not msg.texts  # same own_messages=True behavior as /run
+
+
+def test_runcron_with_no_args_still_forces_cron_and_has_no_target_file(monkeypatch):
+    """/runcron with no filename still forces the cron trigger, and doesn't
+    set PISCRIBE_ONLY at all (processes the whole pending folder)."""
+    store.init_db()
+    monkeypatch.setattr(handlers.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(handlers, "current_run_pid", lambda: None)
+
+    upd, _msg = _update(_uid())
+    asyncio.run(handlers.runcron(upd, _ctx()))
+
+    env = _FakePopen.last.env
+    assert env["PISCRIBE_TRIGGER"] == "cron"
+    assert "PISCRIBE_ONLY" not in env
+
+
 def test_retry_report_shows_a_spanish_status_label_not_the_raw_value(monkeypatch):
     """The post-/retry report translates the DB status word (e.g. 'partial') to Spanish.
 

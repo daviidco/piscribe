@@ -230,23 +230,29 @@ keep the chat private.
 | `/status`                    | Run/pause state, last run, last success, free disk                              |
 | `/recap [n\|file]`           | Summary of the n-th most recent file (default 1)                                |
 | `/transcript [n\|file]`      | Original transcript, sent as a document                                         |
-| `/logs [n\|errors]`          | A run's log file, or just its error/warning lines                               |
+| `/logs [id\|errors]`         | A run's log file by id (see `/history`; default latest), or its warning/error lines |
 | `/history [n]`               | Compact list of recent runs                                                     |
 | `/pending`                   | Files currently in the Drive pending folder                                     |
 | `/stats`                     | Files / errors / runs / avg duration over the last 7 days                       |
 | `/find <text>`               | Search filenames and summaries                                                  |
 | `/version` `/whoami` `/help` | Checkout SHA + model / your ids / command list                                  |
-| `/run [file]`                | Run now — whole pending folder, or one file; refused while a run holds the lock |
+| `/run [file]`                | Run now — whole pending folder, or one file; messages go only to you            |
+| `/runcron [file]`            | Same as `/run`, but broadcasts to every chat in `TG_CHAT_IDS`, like cron does   |
 | `/retry [n\|file]`           | Reprocess a file, re-fetched from the processed folder                          |
 | `/resummarize [n\|file]`     | Re-run only the summary over the stored transcript                              |
 | `/cancel`                    | SIGTERM (then SIGKILL) the run in progress — cron or manual                     |
 | `/pause` `/resume`           | Stop / restart processing (runs record as `skipped` while paused)               |
 
-`/run`, `/retry` and `/resummarize` spawn `pipeline.py` with `PISCRIBE_*`
-environment variables, so a bot-triggered pass is recorded with `trigger=manual`
-and the caller's id. The bot posts a startup ping, and alerts the chats if no run
-has succeeded for `DEADMAN_HOURS` (default 5) — plus a one-time "recovered" notice
-once a run succeeds again.
+`/run`, `/runcron`, `/retry` and `/resummarize` spawn `pipeline.py` with
+`PISCRIBE_*` environment variables, so a bot-triggered pass is recorded with
+the caller's id (`PISCRIBE_BY`). `/run`, `/retry` and `/resummarize` record
+`trigger=manual`, so their progress/result messages go only to the caller
+(see `pipeline._targets`); `/runcron` forces `trigger=cron` instead, so it
+broadcasts and even shows up in `/history` indistinguishable from a real
+automated run — use it when the result matters to the whole team, not just
+you. The bot posts a startup ping, and alerts the chats if no run has
+succeeded for `DEADMAN_HOURS` (default 5) — plus a one-time "recovered"
+notice once a run succeeds again.
 
 Enable it as a user service:
 

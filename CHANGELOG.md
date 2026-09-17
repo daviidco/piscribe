@@ -11,6 +11,13 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
 
 ### Added
 
+- `/runcron [file]` — same as `/run`, but forces `PISCRIBE_TRIGGER=cron` so
+  the run broadcasts its progress/result to every chat in `TG_CHAT_IDS`
+  (`pipeline._targets`) instead of only to whoever asked, and shows up in
+  `/history` indistinguishable from a real automated run. `/run` stays
+  requester-only; use `/runcron` when the outcome matters to the whole team.
+  The requester's id is still recorded (`PISCRIBE_BY`), just not surfaced by
+  the trigger field.
 - `/version` now shows `config.VERSION` (from the `VERSION` file) alongside
   the git SHA and configured models.
 - `/recap` now signs the summary with which engine transcribed and
