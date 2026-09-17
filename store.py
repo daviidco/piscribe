@@ -164,12 +164,17 @@ def last_ok_at():
         return row["finished_at"] if row else None
 
 
-def nth_file(n=1):
-    """The ``n``-th most recent processed file (1 = latest) as a dict, or ``None``."""
+def latest_file():
+    """The single most recently processed file, or ``None``."""
     with _connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM files ORDER BY id DESC LIMIT 1 OFFSET ?", (max(n, 1) - 1,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM files ORDER BY id DESC LIMIT 1").fetchone()
+        return dict(row) if row else None
+
+
+def file_by_id(file_id):
+    """A specific file by its id (the ``#N`` shown by ``/find``), or ``None``."""
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
         return dict(row) if row else None
 
 

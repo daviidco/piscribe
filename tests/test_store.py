@@ -21,9 +21,11 @@ def test_run_lifecycle_and_reads():
     assert (last["files_ok"], last["files_total"]) == (1, 2)
     assert last["log_path"] == "/tmp/run.log"
 
-    assert store.nth_file(1)["filename"] == "b.txt"
-    assert store.nth_file(2)["filename"] == "a.mp4"
-    assert store.nth_file(2)["summary"] == "resumen A"
+    assert store.latest_file()["filename"] == "b.txt"
+    a_id = store.file_by_name("a.mp4")["id"]
+    assert store.file_by_id(a_id)["filename"] == "a.mp4"
+    assert store.file_by_id(a_id)["summary"] == "resumen A"
+    assert store.file_by_id(999999) is None
     assert store.file_by_name("a.mp4")["transcript_path"] == "/t/a.txt"
     assert store.file_by_name("nope") is None
 
@@ -103,7 +105,7 @@ def test_record_file_stores_backend_provenance():
                       transcribe_backend="Groq · whisper-large-v3",
                       summarize_backend="local · Ollama qwen3:1.7b")
 
-    row = store.nth_file(1)
+    row = store.latest_file()
     assert row["transcribe_backend"] == "Groq · whisper-large-v3"
     assert row["summarize_backend"] == "local · Ollama qwen3:1.7b"
 
@@ -151,6 +153,6 @@ def test_migration_adds_backend_columns_to_a_pre_existing_files_table():
                       transcribe_backend="Groq · whisper-large-v3",
                       summarize_backend="local · Ollama qwen3:1.7b")
 
-    row = store.nth_file(1)
+    row = store.latest_file()
     assert row["transcribe_backend"] == "Groq · whisper-large-v3"
     assert row["summarize_backend"] == "local · Ollama qwen3:1.7b"

@@ -168,17 +168,20 @@ def test_recap_omits_the_transcription_line_for_text_files():
     assert "_transcripción:" not in text
 
 
-def test_resolve_file_by_index_and_name():
-    """resolve_file maps None/digit/name to the right file rows."""
+def test_resolve_file_by_id_and_name():
+    """resolve_file maps None/digit/name to the right file rows — a digit is
+    the file's actual database id (the #N shown by /find), not a position."""
     store.init_db()
     run_id = store.start_run("cron")
     store.record_file(run_id, "one.txt", "text", "ok", summary="1")
     store.record_file(run_id, "two.txt", "text", "ok", summary="2")
+    one_id = store.file_by_name("one.txt")["id"]
 
     assert handlers.resolve_file(None)["filename"] == "two.txt"
-    assert handlers.resolve_file("2")["filename"] == "one.txt"
+    assert handlers.resolve_file(str(one_id))["filename"] == "one.txt"
     assert handlers.resolve_file("one.txt")["summary"] == "1"
     assert handlers.resolve_file("missing.txt") is None
+    assert handlers.resolve_file("999999") is None
 
 
 class _FakePopen:
@@ -351,6 +354,26 @@ def test_retry_resolves_a_filename_and_sets_mode(monkeypatch):
     env = _FakePopen.last.env
     assert env["PISCRIBE_MODE"] == "retry"
     assert env["PISCRIBE_ONLY"] == "latest.mp4"
+
+
+def test_retry_with_a_digit_targets_that_files_id_not_a_position(monkeypatch):
+    """/retry <digit> resolves the digit as the file's actual database id
+    (the #N shown by /find) — NOT "the n-th most recent file". The older,
+    position-based file.mp4 here has the LOWER id despite being requested
+    second, so an id-based lookup and a position-based one would disagree."""
+    store.init_db()
+    rid = store.start_run("cron")
+    store.record_file(rid, "older.mp4", "video", "error", error="x")
+    store.record_file(rid, "newer.mp4", "video", "error", error="y")
+    older_id = store.file_by_name("older.mp4")["id"]
+    monkeypatch.setattr(handlers.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(handlers, "current_run_pid", lambda: None)
+
+    upd, _msg = _update(_uid())
+    asyncio.run(handlers.retry(upd, _ctx([str(older_id)])))
+
+    env = _FakePopen.last.env
+    assert env["PISCRIBE_ONLY"] == "older.mp4"
 
 
 def test_run_is_refused_while_a_run_holds_the_lock(monkeypatch):

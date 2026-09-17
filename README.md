@@ -225,21 +225,25 @@ the ids in `TG_CHAT_IDS` (`/whoami`, open to anyone, helps you find yours), and
 **everyone in that list can use every command, `/run` and `/cancel` included** —
 keep the chat private.
 
+`#id` below is always a real database id, never a position — a run's id comes
+from `/history`, a file's from `/find`. `/history`'s own `n` is a count of
+rows to show, unrelated to any id.
+
 | Command                      | Does                                                                            |
 | ---------------------------- | ------------------------------------------------------------------------------- |
 | `/status`                    | Run/pause state, last run, last success, free disk                              |
-| `/recap [n\|file]`           | Summary of the n-th most recent file (default 1)                                |
-| `/transcript [n\|file]`      | Original transcript, sent as a document                                         |
-| `/logs [id\|errors]`         | A run's log file by id (see `/history`; default latest), or its warning/error lines |
-| `/history [n]`               | Compact list of recent runs                                                     |
+| `/recap [#id\|file]`         | Summary of a file by id (see `/find`; default latest)                           |
+| `/transcript [#id\|file]`    | Original transcript, sent as a document                                         |
+| `/logs [#id\|errors]`        | A run's log file by id (see `/history`; default latest), or its warning/error lines |
+| `/history [n]`               | Compact list of the last `n` runs                                               |
 | `/pending`                   | Files currently in the Drive pending folder                                     |
 | `/stats`                     | Files / errors / runs / avg duration over the last 7 days                       |
-| `/find <text>`               | Search filenames and summaries                                                  |
+| `/find <text>`               | Search filenames and summaries — shows each result's `#id`                      |
 | `/version` `/whoami` `/help` | Checkout SHA + model / your ids / command list                                  |
 | `/run [file]`                | Run now — whole pending folder, or one file; messages go only to you            |
 | `/runcron [file]`            | Same as `/run`, but broadcasts to every chat in `TG_CHAT_IDS`, like cron does   |
-| `/retry [n\|file]`           | Reprocess a file, re-fetched from the processed folder                          |
-| `/resummarize [n\|file]`     | Re-run only the summary over the stored transcript                              |
+| `/retry [#id\|file]`         | Reprocess a file (by id, see `/find`), re-fetched from the processed folder     |
+| `/resummarize [#id\|file]`   | Re-run only the summary over the stored transcript (by id, see `/find`)         |
 | `/cancel`                    | SIGTERM (then SIGKILL) the run in progress — cron or manual                     |
 | `/pause` `/resume`           | Stop / restart processing (runs record as `skipped` while paused)               |
 

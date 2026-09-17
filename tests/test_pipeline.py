@@ -407,8 +407,8 @@ def test_resummarize_file_uses_the_stored_transcript(monkeypatch):
     assert "RE<<texto original de la reunion>>" in sent[0]
     assert "_resumen:" not in sent[0]  # signature is its own message
     assert "_resumen: local · Ollama test-qwen_" in sent[1]
-    assert store.nth_file(1)["summary"] == "RE<<texto original de la reunion>>"
-    assert store.nth_file(1)["summarize_backend"] == "local · Ollama test-qwen"
+    assert store.latest_file()["summary"] == "RE<<texto original de la reunion>>"
+    assert store.latest_file()["summarize_backend"] == "local · Ollama test-qwen"
 
 
 @pytest.mark.usefixtures("work_dirs")

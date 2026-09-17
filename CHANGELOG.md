@@ -85,6 +85,16 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
   `/recap`. This way a very long summary that Telegram splits into several
   parts, or a summary whose Markdown fails to parse, can't take the
   signature down with it; the two are independent `sendMessage` calls.
+- `/recap`, `/transcript`, `/retry` and `/resummarize`'s numeric argument is
+  now a file's actual database id (the `#N` shown by `/find`) instead of a
+  *position* counting back from the most recent file (1 = latest, 2 = second
+  latest, ...) — the same confusion `/logs` had before it was switched to
+  real run ids, and the same fix: `store.nth_file(n)` is gone, replaced by
+  `store.file_by_id(file_id)` (plus a plain `store.latest_file()` for the
+  no-argument case). `/help`'s command list and the README's table now spell
+  out, up front, that `#id` is always a real database id — a run's from
+  `/history`, a file's from `/find` — never a position, and that `/history`'s
+  own `n` is an unrelated row count.
 
 ### Fixed
 

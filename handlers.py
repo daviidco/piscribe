@@ -58,13 +58,16 @@ _LOG_LEVEL_RE = re.compile(r"^\[[^\]]*\]\s+(WARNING|ERROR)\b")
 
 
 HELP_TEXT = (
-    "piscribe control bot\n\n"
+    "Piscribe Control bot\n\n"
+    "«#id» es siempre un id real de la base — nunca una posición.\n"
+    "El de una corrida sale de /history; el de un archivo, de /find.\n"
+    "«n» en /history es la cantidad de corridas a mostrar, no un id.\n\n"
     "consulta:\n"
     "  /status — estado y último run\n"
-    "  /recap [n|archivo] — resumen (default 1)\n"
-    "  /transcript [n|archivo] — transcripción (archivo)\n"
-    "  /logs [id|errors] — log de la corrida #id (ver /history; sin id: la última)\n"
-    "  /history [n] — últimas n ejecuciones\n"
+    "  /recap [#id|archivo] — resumen\n"
+    "  /transcript [#id|archivo] — transcripción\n"
+    "  /logs [#id|errors] — log de la corrida\n"
+    "  /history [n] — las últimas n corridas\n"
     "  /pending — archivos en la carpeta de Drive\n"
     "  /stats — métricas de los últimos 7 días\n"
     "  /find <texto> — buscar en resúmenes/archivos\n"
@@ -73,8 +76,8 @@ HELP_TEXT = (
     "control:\n"
     "  /run [archivo] — ejecutar ahora (avisos solo para vos)\n"
     "  /runcron [archivo] — igual que /run, pero avisa a todo el equipo\n"
-    "  /retry [n|archivo] — reprocesar desde 'processed'\n"
-    "  /resummarize [n|archivo] — rehacer solo el resumen\n"
+    "  /retry [#id|archivo] — reprocesar desde 'processed'\n"
+    "  /resummarize [#id|archivo] — rehacer solo el resumen\n"
     "  /cancel — detener el run en curso\n"
     "  /pause /resume — pausar/reactivar los runs"
 )
@@ -125,16 +128,18 @@ def _wait_for_exit(pid, seconds):
 
 
 def resolve_file(arg):
-    """Map a command arg (None -> latest, digit -> nth, else filename) to a row."""
+    """Map a command arg (None -> latest, digit -> that file's id, else
+    filename) to a row. A file's id is the ``#N`` shown by ``/find``."""
     if not arg:
-        return store.nth_file(1)
+        return store.latest_file()
     if arg.isdigit():
-        return store.nth_file(int(arg))
+        return store.file_by_id(int(arg))
     return store.file_by_name(arg)
 
 
 def _target_filename(context):
-    """Resolve a /retry|/resummarize argument to a filename (arg or nth file)."""
+    """Resolve a /retry|/resummarize argument to a filename (arg, a file id,
+    or the latest file)."""
     arg = context.args[0] if context.args else None
     if arg and not arg.isdigit():
         return arg
@@ -256,7 +261,7 @@ async def status(update, context):
 
 @authorized
 async def recap(update, context):
-    """/recap [n|archivo] — the summary of a processed file, signed with its engine(s)."""
+    """/recap [#id|archivo] — the summary of a processed file, signed with its engine(s)."""
     row = resolve_file(context.args[0] if context.args else None)
     if not row:
         await update.message.reply_text("no encuentro ese archivo.")
@@ -286,7 +291,7 @@ async def recap(update, context):
 
 @authorized
 async def transcript(update, context):
-    """/transcript [n|archivo] — the original transcript, as a document."""
+    """/transcript [#id|archivo] — the original transcript, as a document."""
     row = resolve_file(context.args[0] if context.args else None)
     if not row:
         await update.message.reply_text("no encuentro ese archivo.")
@@ -422,7 +427,7 @@ async def runcron(update, context):
 
 @authorized
 async def retry(update, context):
-    """/retry [n|archivo] — reprocess a file from the processed folder."""
+    """/retry [#id|archivo] — reprocess a file from the processed folder."""
     name = _target_filename(context)
     if not name:
         await update.message.reply_text("no encuentro ese archivo.")
@@ -435,7 +440,7 @@ async def retry(update, context):
 
 @authorized
 async def resummarize(update, context):
-    """/resummarize [n|archivo] — re-run only the summary over a stored transcript."""
+    """/resummarize [#id|archivo] — re-run only the summary over a stored transcript."""
     name = _target_filename(context)
     if not name:
         await update.message.reply_text("no encuentro ese archivo.")
