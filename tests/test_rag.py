@@ -35,8 +35,11 @@ class _FakeGroqClient:
         self.chat = SimpleNamespace(completions=_FakeCompletions(content))
 
 
-def _chunk(filename, text, vector, kind="transcript"):
-    return {"filename": filename, "kind": kind, "text": text, "embedding": vector}
+def _chunk(filename, text, vector, kind="transcript", created_at="2026-01-01 00:00:00"):
+    return {
+        "filename": filename, "kind": kind, "text": text, "embedding": vector,
+        "created_at": created_at,
+    }
 
 
 def _fake_embed(vector):
@@ -124,7 +127,7 @@ def test_answer_question_uses_groq_when_available(monkeypatch):
     answer, sources, backend = rag.answer_question("que paso con el presupuesto?")
 
     assert answer == "respuesta de groq"
-    assert sources == ["reunion.mp4"]
+    assert sources == [("reunion.mp4", "2026-01-01 00:00:00")]
     assert backend == f"Groq · {rag.GROQ_MODEL}"
     assert "presupuesto aprobado" in seen["prompt"]
     assert "que paso con el presupuesto?" in seen["prompt"]
@@ -147,7 +150,7 @@ def test_answer_question_falls_back_to_local_on_groq_failure(monkeypatch, read_l
     answer, sources, backend = rag.answer_question("pregunta")
 
     assert answer == "respuesta local"
-    assert sources == ["reunion.mp4"]
+    assert sources == [("reunion.mp4", "2026-01-01 00:00:00")]
     assert backend == f"local · Ollama {rag.QWEN_MODEL}"
     assert "groq unavailable" in read_log()
 
@@ -174,34 +177,63 @@ def test_answer_question_no_api_key_skips_groq(monkeypatch):
 
 def test_answer_question_returns_sorted_unique_source_filenames(monkeypatch):
     """Sources are deduplicated (a file can contribute both a transcript and a
-    summary chunk) and sorted, not left in whatever order they matched."""
+    summary chunk) and sorted by filename; when a file's own chunks carry
+    different timestamps, the most recent one wins."""
     monkeypatch.setattr(rag, "GROQ_API_KEY", "")
     monkeypatch.setattr(rag, "RAG_TOP_K", 5)
     monkeypatch.setattr(rag.ollama, "embed", _fake_embed([1.0, 0.0]))
     monkeypatch.setattr(
         rag.store, "all_chunks",
         lambda: [
-            _chunk("zeta.mp4", "uno", [1.0, 0.0]),
-            _chunk("alfa.mp4", "dos", [1.0, 0.0], kind="summary"),
-            _chunk("alfa.mp4", "tres", [1.0, 0.0]),
+            _chunk("zeta.mp4", "uno", [1.0, 0.0], created_at="2026-01-01 00:00:00"),
+            _chunk(
+                "alfa.mp4", "dos", [1.0, 0.0], kind="summary",
+                created_at="2026-01-02 00:00:00",
+            ),
+            _chunk("alfa.mp4", "tres", [1.0, 0.0], created_at="2026-01-01 00:00:00"),
         ],
     )
     monkeypatch.setattr(rag, "_answer_local", lambda _prompt: "ok")
 
     _answer, sources, _backend = rag.answer_question("pregunta")
 
-    assert sources == ["alfa.mp4", "zeta.mp4"]
+    assert sources == [
+        ("alfa.mp4", "2026-01-02 00:00:00"),
+        ("zeta.mp4", "2026-01-01 00:00:00"),
+    ]
 
 
-def test_build_prompt_includes_the_context_and_the_question():
-    """Sanity check on prompt assembly: retrieved text, its source, and the
-    original question all make it into the final prompt."""
-    matches = [(_chunk("reunion.mp4", "se aprobo el presupuesto", [1.0, 0.0]), 0.9)]
+def test_sources_dedupes_by_filename_keeping_the_most_recent_timestamp():
+    """_sources collapses multiple chunks from the same file into one entry,
+    keeping whichever timestamp is most recent, sorted by filename."""
+    matches = [
+        (_chunk("a.mp4", "x", [1.0, 0.0], created_at="2026-01-01 00:00:00"), 0.9),
+        (_chunk("a.mp4", "y", [1.0, 0.0], created_at="2026-01-03 00:00:00"), 0.8),
+        (_chunk("b.mp4", "z", [1.0, 0.0], created_at="2026-01-02 00:00:00"), 0.7),
+    ]
+
+    assert rag._sources(matches) == [
+        ("a.mp4", "2026-01-03 00:00:00"),
+        ("b.mp4", "2026-01-02 00:00:00"),
+    ]
+
+
+def test_build_prompt_includes_the_context_the_question_and_each_sources_date():
+    """Sanity check on prompt assembly: retrieved text, its source AND
+    timestamp, and the original question all make it into the final
+    prompt — the model needs the date to reason about recency."""
+    matches = [(
+        _chunk(
+            "reunion.mp4", "se aprobo el presupuesto", [1.0, 0.0],
+            created_at="2026-03-15 10:00:00",
+        ),
+        0.9,
+    )]
 
     prompt = rag._build_prompt("cuanto se aprobo?", matches)
 
     assert "se aprobo el presupuesto" in prompt
-    assert "[Fuente: reunion.mp4]" in prompt
+    assert "[Fuente: reunion.mp4 — 2026-03-15 10:00:00]" in prompt
     assert "cuanto se aprobo?" in prompt
 
 

@@ -11,6 +11,15 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
 
 ### Added
 
+- `/input <texto>` adds free-text context (pasted notes, content from another
+  meeting, anything outside the normal Drive-driven pipeline) to the `/ask`
+  index — chunked and embedded the same way as a processed file
+  (`embeddings.index_note`), labeled with a UTC timestamp of when it was
+  added (`nota-YYYYMMDD-HHMMSS`) so it never collides with or replaces an
+  earlier note. Reads the raw Telegram message text (not the whitespace-
+  tokenized `context.args` every other free-text command uses) so a
+  multi-line paste keeps its line breaks instead of being flattened to one
+  line.
 - `/ask <pregunta>` answers questions about indexed meeting transcripts and
   summaries: the question is embedded locally (Ollama `nomic-embed-text`,
   `EMBED_MODEL`) and compared by cosine similarity against every indexed
@@ -20,7 +29,10 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
   hallucinated answer. When there's enough context, the answer itself is
   drafted by Groq first and falls back to local Ollama on any failure — same
   policy as `/recap`'s summaries — and is sent back with a "📎 Fuentes:"
-  footer listing which file(s) it drew from. The summary and its engine
+  footer listing which file(s)/note(s) it drew from and when each was
+  indexed, e.g. `reunion.mp4 (2026-09-18 14:30:00)` — the same timestamp is
+  also fed to the model inside the prompt, so it can reason about which
+  source is more recent when that matters. The summary and its engine
   signature are always sent to Telegram first; indexing for `/ask` is
   attempted only after, and its own outcome — success or failure — is
   reported as a separate follow-up message, so a slow or failed embedding

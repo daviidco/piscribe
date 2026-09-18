@@ -3,6 +3,8 @@
 # Reaches into the module's own private helpers on purpose, same as test_summary.py.
 # pylint: disable=protected-access
 
+from datetime import datetime, timezone
+
 import embeddings
 import store
 
@@ -132,3 +134,54 @@ def test_index_file_pairs_each_chunk_with_its_own_embedding_in_order(monkeypatch
 
     assert seen["transcript"] == [("T-1", [0.0]), ("T-2", [1.0])]
     assert seen["summary"] == [("S-1", [0.0]), ("S-2", [1.0])]
+
+
+def test_index_note_labels_and_stores_with_kind_manual(monkeypatch):
+    """index_note (used by /input) chunks + embeds the free text and stores
+    it under kind='manual', labeled with a UTC timestamp, and returns that
+    label so the caller can tell the user where the note landed."""
+    monkeypatch.setattr(embeddings, "_embed_texts", lambda texts: [[1.0] for _ in texts])
+    seen = {}
+    monkeypatch.setattr(
+        store, "replace_chunks",
+        lambda filename, kind, chunks: seen.update(filename=filename, kind=kind, chunks=chunks),
+    )
+
+    label = embeddings.index_note("nota pegada de otra reunion.")
+
+    assert label.startswith("nota-")
+    assert seen["filename"] == label
+    assert seen["kind"] == "manual"
+    assert seen["chunks"] == [("nota pegada de otra reunion.", [1.0])]
+
+
+def test_index_note_never_overwrites_a_previous_note(monkeypatch):
+    """Two separate /input calls at different timestamps get two distinct
+    labels — each note is its own additive RAG source, never replacing an
+    earlier one via the same (filename, kind) replace_chunks would collide on."""
+    monkeypatch.setattr(embeddings, "_embed_texts", lambda texts: [[1.0] for _ in texts])
+    calls = []
+    monkeypatch.setattr(
+        store, "replace_chunks", lambda filename, kind, chunks: calls.append(filename)
+    )
+
+    class _FakeDatetime:  # pylint: disable=too-few-public-methods
+        """Stand-in for datetime.datetime with a scripted sequence of .now() values."""
+
+        _values = [
+            datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+        ]
+
+        @classmethod
+        def now(cls, _tz):
+            """Pop the next scripted timestamp."""
+            return cls._values.pop(0)
+
+    monkeypatch.setattr(embeddings, "datetime", _FakeDatetime)
+
+    first = embeddings.index_note("primera nota")
+    second = embeddings.index_note("segunda nota")
+
+    assert first != second
+    assert calls == [first, second]

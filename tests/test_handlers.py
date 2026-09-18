@@ -517,12 +517,14 @@ def test_ask_without_args_shows_usage():
 
 
 def test_ask_replies_with_the_answer_and_sources(monkeypatch):
-    """/ask joins the free-text args into one question and appends a sources footer."""
+    """/ask joins the free-text args into one question and appends a sources
+    footer, with each source's name AND the date it was indexed."""
     seen = {}
 
     def fake_answer_question(question):
         seen["question"] = question
-        return "la reunion trato sobre el presupuesto", ["abril.mp4", "mayo.mp4"], "Groq · test"
+        sources = [("abril.mp4", "2026-04-01 10:00:00"), ("mayo.mp4", "2026-05-01 10:00:00")]
+        return "la reunion trato sobre el presupuesto", sources, "Groq · test"
 
     monkeypatch.setattr(handlers.rag, "answer_question", fake_answer_question)
 
@@ -531,7 +533,8 @@ def test_ask_replies_with_the_answer_and_sources(monkeypatch):
 
     assert seen["question"] == "que se hablo del presupuesto?"
     assert msg.texts == [
-        "la reunion trato sobre el presupuesto\n\n📎 Fuentes: abril.mp4, mayo.mp4"
+        "la reunion trato sobre el presupuesto\n\n📎 Fuentes: "
+        "abril.mp4 (2026-04-01 10:00:00), mayo.mp4 (2026-05-01 10:00:00)"
     ]
 
 
@@ -568,6 +571,70 @@ def test_ask_ignores_unauthorized_ids():
     """A caller outside TG_CHAT_IDS gets no reply, same as any other command."""
     upd, msg = _update(999999)
     asyncio.run(handlers.ask(upd, _ctx(["hola"])))
+    assert not msg.texts
+
+
+def _update_with_text(user_id, text):
+    """Like _update, but also sets update.message.text — /input reads the raw
+    message text (not context.args) to preserve internal newlines."""
+    upd, msg = _update(user_id)
+    upd.message.text = text
+    return upd, msg
+
+
+def test_add_input_without_text_shows_usage():
+    """/input with nothing after the command shows the usage line."""
+    upd, msg = _update_with_text(_uid(), "/input")
+    asyncio.run(handlers.add_input(upd, _ctx()))
+    assert msg.texts == ["uso: /input <texto>"]
+
+
+def test_add_input_with_only_whitespace_shows_usage():
+    """/input followed by only whitespace is treated the same as no text."""
+    upd, msg = _update_with_text(_uid(), "/input    ")
+    asyncio.run(handlers.add_input(upd, _ctx()))
+    assert msg.texts == ["uso: /input <texto>"]
+
+
+def test_add_input_preserves_internal_newlines(monkeypatch):
+    """A pasted multi-line note keeps its line breaks — /input must read the
+    raw message text, not context.args (which " ".join would flatten)."""
+    seen = {}
+
+    def fake_index_note(text):
+        seen["text"] = text
+        return "nota-20260101-000000"
+
+    monkeypatch.setattr(handlers.embeddings, "index_note", fake_index_note)
+
+    pasted = "Reunion de ventas 15/03\nSe aprobo el presupuesto.\nPendiente: firmar contrato."
+    upd, msg = _update_with_text(_uid(), f"/input {pasted}")
+    asyncio.run(handlers.add_input(upd, _ctx()))
+
+    assert seen["text"] == pasted
+    assert msg.texts == ["📎 nota indexada para /ask (nota-20260101-000000)"]
+
+
+def test_add_input_reports_a_redacted_error_instead_of_crashing(monkeypatch):
+    """A failure from embeddings.index_note (e.g. Ollama down) replies with a
+    redacted error instead of propagating out of the handler."""
+
+    def boom(_text):
+        raise RuntimeError(f"conexion rechazada por {config.TG_TOKEN}")
+
+    monkeypatch.setattr(handlers.embeddings, "index_note", boom)
+
+    upd, msg = _update_with_text(_uid(), "/input algo de contexto")
+    asyncio.run(handlers.add_input(upd, _ctx()))
+
+    assert msg.texts and msg.texts[0].startswith("error:")
+    assert config.TG_TOKEN not in msg.texts[0]
+
+
+def test_add_input_ignores_unauthorized_ids():
+    """A caller outside TG_CHAT_IDS gets no reply, same as any other command."""
+    upd, msg = _update_with_text(999999, "/input algo")
+    asyncio.run(handlers.add_input(upd, _ctx()))
     assert not msg.texts
 
 

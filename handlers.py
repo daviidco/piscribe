@@ -27,6 +27,7 @@ from functools import wraps
 from pathlib import Path
 
 import config
+import embeddings
 import rag
 import store
 from drive import list_pending_files
@@ -76,6 +77,7 @@ _HELP_COMMANDS = (
         ("/whoami", "tu id de Telegram"),
     )),
     ("control", (
+        ("/input <texto>", "agregar contexto libre (nota, otra reunión) a /ask"),
         ("/run [archivo]", "ejecutar ahora (solo para vos)"),
         ("/runcron [archivo]", "igual, pero avisa a todo el equipo"),
         ("/retry [#id|archivo]", "reprocesar desde 'processed'"),
@@ -457,11 +459,30 @@ async def ask(update, context):
         return
     text = answer
     if sources:
-        text += "\n\n📎 Fuentes: " + ", ".join(sources)
+        text += "\n\n📎 Fuentes: " + ", ".join(f"{name} ({date})" for name, date in sources)
     await update.message.reply_text(text)
 
 
 # --- control commands --------------------------------------------------
+
+@authorized
+async def add_input(update, context):
+    """/input <texto> — add free-text context (e.g. pasted notes from
+    another meeting) to the /ask index, labeled with when it was added."""
+    parts = (update.message.text or "").split(maxsplit=1)
+    text = parts[1].strip() if len(parts) > 1 else ""
+    if not text:
+        await update.message.reply_text("uso: /input <texto>")
+        return
+    try:
+        label = await asyncio.get_running_loop().run_in_executor(
+            None, embeddings.index_note, text
+        )
+    except Exception as e:  # noqa: BLE001  pylint: disable=broad-exception-caught
+        await update.message.reply_text(f"error: {redact(str(e))}")
+        return
+    await update.message.reply_text(f"📎 nota indexada para /ask ({label})")
+
 
 @authorized
 async def run(update, context):

@@ -24,3 +24,11 @@ def test_build_app_registers_the_ask_command():
     commands = {cmd for handler in app.handlers[0] for cmd in getattr(handler, "commands", ())}
 
     assert "ask" in commands
+
+
+def test_build_app_registers_the_input_command():
+    """/input (adding free-text context to the /ask index) is wired up too."""
+    app = bot.build_app()
+    commands = {cmd for handler in app.handlers[0] for cmd in getattr(handler, "commands", ())}
+
+    assert "input" in commands

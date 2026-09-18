@@ -66,9 +66,24 @@ def _search(question_embedding):
 
 def _build_prompt(question, matches):
     context = "\n\n".join(
-        f"[Fuente: {chunk['filename']}]\n{chunk['text']}" for chunk, _ in matches
+        f"[Fuente: {chunk['filename']} — {chunk['created_at']}]\n{chunk['text']}"
+        for chunk, _ in matches
     )
     return _PROMPT_TEMPLATE.format(context=context, question=question)
+
+
+def _sources(matches):
+    """Sorted, deduplicated (filename, created_at) pairs from ``matches``.
+
+    A file can contribute both a transcript and a summary chunk with
+    slightly different timestamps — the most recent one wins per filename.
+    """
+    dates = {}
+    for chunk, _similarity in matches:
+        filename = chunk["filename"]
+        if filename not in dates or chunk["created_at"] > dates[filename]:
+            dates[filename] = chunk["created_at"]
+    return sorted(dates.items())
 
 
 def _answer_local(prompt):
@@ -90,13 +105,13 @@ def _answer_groq(prompt):
 
 
 def answer_question(question):
-    """Answer ``question`` from the indexed transcript/summary chunks.
+    """Answer ``question`` from the indexed transcript/summary/note chunks.
 
     Returns a ``(answer, sources, backend)`` tuple. ``sources`` is a sorted
-    list of the unique filenames the answer draws from — empty when nothing
-    was relevant enough. ``backend`` is ``None`` when the best match didn't
-    cross ``RAG_MIN_SIMILARITY``: no LLM is called at all in that case,
-    avoiding both the cost and the risk of an invented answer.
+    list of ``(filename, created_at)`` pairs the answer draws from — empty
+    when nothing was relevant enough. ``backend`` is ``None`` when the best
+    match didn't cross ``RAG_MIN_SIMILARITY``: no LLM is called at all in
+    that case, avoiding both the cost and the risk of an invented answer.
     """
     response = ollama.embed(model=EMBED_MODEL, input=question)
     # pylint mis-infers ollama.embed's return type, same as ollama.generate in
@@ -107,7 +122,7 @@ def answer_question(question):
         return NO_CONTEXT_ANSWER, [], None
 
     prompt = _build_prompt(question, matches)
-    sources = sorted({chunk["filename"] for chunk, _ in matches})
+    sources = _sources(matches)
 
     if GROQ_API_KEY:
         try:

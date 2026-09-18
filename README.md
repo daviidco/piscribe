@@ -61,7 +61,8 @@ Groq is entirely optional: leave `GROQ_API_KEY` blank in `.env` and every run
 uses the local `whisper.cpp` / Ollama stack only, with nothing leaving the host.
 A separate long-polling bot (`bot.py`) answers `/status`, `/recap`,
 `/transcript`, `/logs`, `/history`, `/ask` (semantic search over every
-indexed transcript/summary) and can trigger a pass with `/run`.
+indexed transcript/summary), `/input` (add free-text context to that index)
+and can trigger a pass with `/run`.
 
 ## Features
 
@@ -74,9 +75,12 @@ indexed transcript/summary) and can trigger a pass with `/run`.
 - **`/ask <question>`** — semantic search over every indexed transcript and
   summary: the question is embedded locally, compared against indexed chunks
   by cosine similarity, and — only when something is actually relevant —
-  answered by Groq (local Ollama fallback), citing which file(s) it drew
-  from. Below the similarity threshold it says it found nothing rather than
-  risk inventing an answer.
+  answered by Groq (local Ollama fallback), citing which file(s)/note(s) it
+  drew from and when each was indexed. Below the similarity threshold it says
+  it found nothing rather than risk inventing an answer.
+- **`/input <text>`** — feed `/ask` context that never went through the
+  pipeline (a note, content pasted from another meeting), indexed the same
+  way and labeled with a UTC timestamp of when it was added.
 - **Always-Spanish summaries** regardless of the source language.
 - **Multi-recipient Telegram delivery** with Markdown formatting.
 - **Idempotent processing** — files are moved to a processed folder as soon as they
@@ -106,7 +110,7 @@ indexed transcript/summary) and can trigger a pass with `/run`.
 | [video.py](video.py)                                                                | Audio extraction; transcription via Groq `whisper-large-v3` with local `whisper.cpp` fallback |
 | [text.py](text.py)                                                                  | Reads plain-text / Markdown inputs                            |
 | [summary.py](summary.py)                                                            | Summary generation via Groq (Qwen chat) with local Ollama fallback |
-| [embeddings.py](embeddings.py)                                                      | Sentence-bounded chunking + local Ollama embeddings for `/ask` |
+| [embeddings.py](embeddings.py)                                                      | Sentence-bounded chunking + local Ollama embeddings; indexes files (`/ask`) and free-text notes (`/input`) |
 | [rag.py](rag.py)                                                                    | `/ask` retrieval (cosine similarity) + Groq/local answer drafting |
 | [telegram_api.py](telegram_api.py)                                                  | Outbound Bot API helpers (`curl`-based)                       |
 | [utils.py](utils.py)                                                                | UTC, level-aware logging (rotation, per-run log files)         |
@@ -259,6 +263,7 @@ rows to show, unrelated to any id.
 | `/find <text>`               | Search filenames and summaries — shows each result's `#id`                      |
 | `/ask <question>`            | Semantic search over indexed transcripts/summaries, answered by an LLM, with sources |
 | `/version` `/whoami` `/help` | Checkout SHA + model / your ids / command list                                  |
+| `/input <text>`               | Add free-text context (a note, content from another meeting) to the `/ask` index |
 | `/run [file]`                | Run now — whole pending folder, or one file; messages go only to you            |
 | `/runcron [file]`            | Same as `/run`, but broadcasts to every chat in `TG_CHAT_IDS`, like cron does   |
 | `/retry [#id\|file]`         | Reprocess a file (by id, see `/find`), re-fetched from the processed folder     |
@@ -333,6 +338,9 @@ Google Drive (pendings/) ─ rclone ─►  local download
         └─────────  bot reads  ◄───────────┘  /status /recap /transcript /logs …
                                                /ask ─► rag.py: search chunks,
                                                Groq/local ─► answer + sources
+                                               /input <texto> ─► embeddings.py:
+                                               index_note ─► SQLite chunks
+                                               (kind=manual, sin pasar por Drive)
 ```
 
 ```mermaid
@@ -342,6 +350,7 @@ graph TD
     A -->|"/cancel"| B
     A -->|"/pause /resume"| B
     A -->|"/ask pregunta"| B
+    A -->|"/input texto"| B
 
     B -->|Valida y autoriza| C{Comando valido?}
     C -->|No| E[Responde error]
@@ -350,6 +359,7 @@ graph TD
     C -->|"/cancel"| P["SIGTERM al PID del lock"]
     C -->|"/pause /resume"| Q["Toggle piscribe.paused"]
     C -->|"/ask"| R["Rag.py: embebe pregunta, busca en chunks"]
+    C -->|"/input"| U["Embeddings.py: index_note (chunk + embed texto libre)"]
 
     F2 --> F[Pipeline.py]
     P -. detiene .-> F
@@ -369,6 +379,8 @@ graph TD
     R -->|Sin contexto suficiente| E
     R -->|Redacta respuesta| T["Groq chat / Ollama local"]
     T -->|Respuesta + fuentes| A
+    U -->|SQLite chunks kind=manual| L
+    U -->|Confirma label + timestamp| A
 
     F -->|Envia resumen firmado| O[Telegram Bot API]
     O --> A

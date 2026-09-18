@@ -5,6 +5,8 @@ Groq branch at all — indexing always runs through local Ollama
 (config.EMBED_MODEL), regardless of whether GROQ_API_KEY is configured.
 """
 
+from datetime import datetime, timezone
+
 import ollama
 
 import store
@@ -72,3 +74,20 @@ def index_file(filename, transcript=None, summary=None):
         chunks = _chunk_text(text)
         vectors = _embed_texts(chunks)
         store.replace_chunks(filename, kind, list(zip(chunks, vectors)))
+
+
+def index_note(text):
+    """Index free-text context added via /input (e.g. pasted notes from
+    another meeting) as its own RAG source, labeled with when it was added.
+
+    Unlike ``index_file``, the label is unique per call (a timestamp), so
+    ``store.replace_chunks``'s delete-then-insert never removes a previous
+    note — each /input adds a new source instead of replacing one.
+
+    Returns the label, so the caller can tell the user where it landed.
+    """
+    label = f"nota-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    chunks = _chunk_text(text)
+    vectors = _embed_texts(chunks)
+    store.replace_chunks(label, "manual", list(zip(chunks, vectors)))
+    return label
