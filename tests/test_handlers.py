@@ -509,6 +509,68 @@ def test_find_reports_matches():
     assert any("abril.mp4" in t for t in msg.texts)
 
 
+def test_ask_without_args_shows_usage():
+    """/ask with no question shows the usage line, without calling rag at all."""
+    upd, msg = _update(_uid())
+    asyncio.run(handlers.ask(upd, _ctx()))
+    assert msg.texts == ["uso: /ask <pregunta>"]
+
+
+def test_ask_replies_with_the_answer_and_sources(monkeypatch):
+    """/ask joins the free-text args into one question and appends a sources footer."""
+    seen = {}
+
+    def fake_answer_question(question):
+        seen["question"] = question
+        return "la reunion trato sobre el presupuesto", ["abril.mp4", "mayo.mp4"], "Groq · test"
+
+    monkeypatch.setattr(handlers.rag, "answer_question", fake_answer_question)
+
+    upd, msg = _update(_uid())
+    asyncio.run(handlers.ask(upd, _ctx(["que", "se", "hablo", "del", "presupuesto?"])))
+
+    assert seen["question"] == "que se hablo del presupuesto?"
+    assert msg.texts == [
+        "la reunion trato sobre el presupuesto\n\n📎 Fuentes: abril.mp4, mayo.mp4"
+    ]
+
+
+def test_ask_without_sources_omits_the_footer(monkeypatch):
+    """When nothing crossed the similarity threshold, /ask sends just the
+    canned answer — no empty '📎 Fuentes:' footer."""
+    monkeypatch.setattr(
+        handlers.rag, "answer_question", lambda _q: (handlers.rag.NO_CONTEXT_ANSWER, [], None)
+    )
+
+    upd, msg = _update(_uid())
+    asyncio.run(handlers.ask(upd, _ctx(["algo", "no", "indexado"])))
+
+    assert msg.texts == [handlers.rag.NO_CONTEXT_ANSWER]
+
+
+def test_ask_reports_a_redacted_error_instead_of_crashing(monkeypatch):
+    """A failure from rag.answer_question (e.g. Ollama and Groq both down)
+    replies with a redacted error instead of propagating out of the handler."""
+
+    def boom(_question):
+        raise RuntimeError(f"conexion rechazada por {config.TG_TOKEN}")
+
+    monkeypatch.setattr(handlers.rag, "answer_question", boom)
+
+    upd, msg = _update(_uid())
+    asyncio.run(handlers.ask(upd, _ctx(["hola"])))
+
+    assert msg.texts and msg.texts[0].startswith("error:")
+    assert config.TG_TOKEN not in msg.texts[0]
+
+
+def test_ask_ignores_unauthorized_ids():
+    """A caller outside TG_CHAT_IDS gets no reply, same as any other command."""
+    upd, msg = _update(999999)
+    asyncio.run(handlers.ask(upd, _ctx(["hola"])))
+    assert not msg.texts
+
+
 def test_deadman_recovery_notice():
     """deadman_check sends a recovery message once the streak is broken."""
     store.init_db()

@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+import embeddings
 import store
 from config import (
     LOCAL_DIR,
@@ -48,7 +49,7 @@ from runlock import RunLockBusy, run_lock
 from summary import generate_summary
 from telegram_api import redact, send_telegram_message
 from text import process_text
-from utils import log, log_error, run_log
+from utils import log, log_error, log_warning, run_log
 from video import process_video
 
 
@@ -174,6 +175,16 @@ def _record(run_id, file_result):
     )
 
 
+def _index_for_rag(filename, **kwargs):
+    """Best-effort call to embeddings.index_file — never lets an indexing
+    failure (e.g. Ollama down) block delivery of a summary already generated.
+    """
+    try:
+        embeddings.index_file(filename, **kwargs)
+    except Exception as e:  # noqa: BLE001  pylint: disable=broad-exception-caught
+        log_warning(f"indexing {filename} for RAG failed ({e}); continuing without it.")
+
+
 def process_file(
     filename, *, source="pending", notify_stages=False, position=None, chat_ids=None
 ):
@@ -225,6 +236,7 @@ def process_file(
 
         stage(f"🧠 generando resumen de {filename}…")
         summary, summarize_backend = generate_summary(text)
+        _index_for_rag(filename, transcript=text, summary=summary)
         send_telegram_message(_summary_message(filename, summary), chat_ids=chat_ids)
         send_telegram_message(
             _signature_message(transcribe_backend, summarize_backend), chat_ids=chat_ids
@@ -257,6 +269,7 @@ def _resummarize(filename, chat_ids=None):
 
     text = path.read_text(encoding="utf-8")
     summary, summarize_backend = generate_summary(text)
+    _index_for_rag(filename, summary=summary)
     transcribe_backend = row.get("transcribe_backend")
     send_telegram_message(
         _summary_message(filename, summary, label="Resumen (re)"), chat_ids=chat_ids

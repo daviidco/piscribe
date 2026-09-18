@@ -2,7 +2,7 @@
 """piscribe Telegram control bot.
 
 A persistent long-polling process (run under systemd) that answers status /
-history / recap / transcript / logs / stats / find queries and can trigger work
+history / recap / transcript / logs / stats / find / ask queries and can trigger work
 with ``/run``, ``/retry``, ``/resummarize``, ``/cancel`` and ``/pause``. It never
 runs the pipeline in process — those spawn ``pipeline.py`` just like cron — and
 it only reads the SQLite store that ``pipeline.py`` writes.
@@ -60,6 +60,7 @@ def build_app():
     app.add_handler(CommandHandler("pending", handlers.pending))
     app.add_handler(CommandHandler("stats", handlers.stats))
     app.add_handler(CommandHandler("find", handlers.find))
+    app.add_handler(CommandHandler("ask", handlers.ask))
     app.add_handler(CommandHandler("run", handlers.run))
     app.add_handler(CommandHandler("runcron", handlers.runcron))
     app.add_handler(CommandHandler("retry", handlers.retry))

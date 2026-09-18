@@ -2,6 +2,8 @@
 
 import sqlite3
 
+import pytest
+
 import store
 
 
@@ -108,6 +110,51 @@ def test_record_file_stores_backend_provenance():
     row = store.latest_file()
     assert row["transcribe_backend"] == "Groq · whisper-large-v3"
     assert row["summarize_backend"] == "local · Ollama qwen3:1.7b"
+
+
+def test_replace_chunks_inserts_and_reads_back_with_the_embedding_roundtripping():
+    """replace_chunks/all_chunks round-trip text, chunk order, and the
+    embedding vector exactly through the BLOB encoding."""
+    store.init_db()
+    vectors = [[0.1, 0.2, 0.3], [-1.5, 2.5, 0.0]]
+    store.replace_chunks(
+        "reunion.mp4", "transcript",
+        [("fragmento uno", vectors[0]), ("fragmento dos", vectors[1])],
+    )
+
+    rows = store.all_chunks()
+    assert [r["chunk_index"] for r in rows] == [0, 1]
+    assert [r["text"] for r in rows] == ["fragmento uno", "fragmento dos"]
+    for row, expected in zip(rows, vectors):
+        assert row["embedding"] == pytest.approx(expected)
+        assert row["filename"] == "reunion.mp4"
+        assert row["kind"] == "transcript"
+
+
+def test_replace_chunks_clears_old_chunks_for_the_same_filename_and_kind():
+    """A second replace_chunks for (filename, kind) drops the previous rows —
+    a /retry or /resummarize never leaves stale fragments next to fresh ones."""
+    store.init_db()
+    store.replace_chunks("reunion.mp4", "summary", [("viejo", [1.0, 0.0])])
+    store.replace_chunks("reunion.mp4", "summary", [("nuevo", [0.0, 1.0])])
+
+    rows = [r for r in store.all_chunks() if r["filename"] == "reunion.mp4"]
+    assert [r["text"] for r in rows] == ["nuevo"]
+
+
+def test_replace_chunks_does_not_touch_other_filenames_or_kinds():
+    """Replacing one (filename, kind) leaves every other filename/kind alone."""
+    store.init_db()
+    store.replace_chunks("a.mp4", "transcript", [("a-transcript", [1.0])])
+    store.replace_chunks("a.mp4", "summary", [("a-summary", [1.0])])
+    store.replace_chunks("b.mp4", "transcript", [("b-transcript", [1.0])])
+
+    store.replace_chunks("a.mp4", "transcript", [("a-transcript-nuevo", [2.0])])
+
+    remaining = {(r["filename"], r["kind"]): r["text"] for r in store.all_chunks()}
+    assert remaining[("a.mp4", "transcript")] == "a-transcript-nuevo"
+    assert remaining[("a.mp4", "summary")] == "a-summary"
+    assert remaining[("b.mp4", "transcript")] == "b-transcript"
 
 
 def test_migration_adds_backend_columns_to_a_pre_existing_files_table():

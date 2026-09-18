@@ -87,5 +87,19 @@ GROQ_CHUNK_MAX_COMPLETION_TOKENS = int(os.environ.get("GROQ_CHUNK_MAX_COMPLETION
 # didn't get it (see summary.py's _split_into_chunks).
 GROQ_CHUNK_OVERLAP_CHARS = int(os.environ.get("GROQ_CHUNK_OVERLAP_CHARS", "300"))
 
+# RAG (/ask): Groq has no embeddings API, so indexing and question-embedding
+# always run through local Ollama (embeddings.py) regardless of GROQ_API_KEY —
+# only the answer itself (rag.py) gets the Groq-first/local-fallback treatment.
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
+# Below this cosine similarity, /ask answers "no encontré información" without
+# calling any LLM — the retrieved chunks aren't relevant enough to ground an
+# answer, and guessing anyway risks the model inventing one (see rag.py).
+RAG_MIN_SIMILARITY = float(os.environ.get("RAG_MIN_SIMILARITY", "0.35"))
+RAG_CHUNK_CHARS = int(os.environ.get("RAG_CHUNK_CHARS", "1200"))
+# Same rationale as GROQ_CHUNK_OVERLAP_CHARS: a chunk boundary shouldn't cut a
+# sentence's meaning in half for retrieval purposes.
+RAG_CHUNK_OVERLAP_CHARS = int(os.environ.get("RAG_CHUNK_OVERLAP_CHARS", "150"))
+RAG_TOP_K = int(os.environ.get("RAG_TOP_K", "5"))
+
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi"}
 TEXT_EXTENSIONS = {".txt", ".md"}

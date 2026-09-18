@@ -27,6 +27,7 @@ from functools import wraps
 from pathlib import Path
 
 import config
+import rag
 import store
 from drive import list_pending_files
 from runlock import current_run_pid
@@ -70,6 +71,7 @@ _HELP_COMMANDS = (
         ("/pending", "archivos en la carpeta de Drive"),
         ("/stats", "métricas de los últimos 7 días"),
         ("/find <texto>", "buscar en resúmenes/archivos"),
+        ("/ask <pregunta>", "preguntar sobre lo indexado (semántico)"),
         ("/version", "versión y modelo"),
         ("/whoami", "tu id de Telegram"),
     )),
@@ -437,6 +439,26 @@ async def find(update, context):
         for r in rows
     ]
     await update.message.reply_text("\n".join(lines))
+
+
+@authorized
+async def ask(update, context):
+    """/ask <pregunta> — answer from indexed transcripts/summaries (semantic search + LLM)."""
+    if not context.args:
+        await update.message.reply_text("uso: /ask <pregunta>")
+        return
+    question = " ".join(context.args)
+    try:
+        answer, sources, _backend = await asyncio.get_running_loop().run_in_executor(
+            None, rag.answer_question, question
+        )
+    except Exception as e:  # noqa: BLE001  pylint: disable=broad-exception-caught
+        await update.message.reply_text(f"error: {redact(str(e))}")
+        return
+    text = answer
+    if sources:
+        text += "\n\n📎 Fuentes: " + ", ".join(sources)
+    await update.message.reply_text(text)
 
 
 # --- control commands --------------------------------------------------

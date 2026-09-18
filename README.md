@@ -43,6 +43,11 @@ On each run it:
    qwen/qwen3.8-27b_` or `_resumen: local · Ollama qwen3:1.7b_`).
 6. Cleans up the local download, archives the transcript, records the run (and
    which engine handled each stage) in a SQLite history, and writes a per-run log.
+7. Indexes the transcript and summary for `/ask`: both are chunked and embedded
+   locally via Ollama (`EMBED_MODEL`, default `nomic-embed-text`), and the
+   chunks are stored in SQLite for later semantic search — see
+   [embeddings.py](embeddings.py). A failure here (e.g. Ollama down) is logged
+   and never blocks delivery of the summary already sent in step 5.
 
 Each stage above also pings Telegram — the run starting, each file's
 download/transcription/summary step, and a wrap-up with the ok/total count —
@@ -55,7 +60,8 @@ running `/run` doesn't put anything in Pedro's chat.
 Groq is entirely optional: leave `GROQ_API_KEY` blank in `.env` and every run
 uses the local `whisper.cpp` / Ollama stack only, with nothing leaving the host.
 A separate long-polling bot (`bot.py`) answers `/status`, `/recap`,
-`/transcript`, `/logs`, `/history` and can trigger a pass with `/run`.
+`/transcript`, `/logs`, `/history`, `/ask` (semantic search over every
+indexed transcript/summary) and can trigger a pass with `/run`.
 
 ## Features
 
@@ -65,6 +71,12 @@ A separate long-polling bot (`bot.py`) answers `/status`, `/recap`,
   `whisper.cpp` / Ollama on any failure (or always, if no `GROQ_API_KEY` is set).
 - **Engine provenance** — every summary is signed with which backend produced it,
   and it's recorded in the SQLite history too.
+- **`/ask <question>`** — semantic search over every indexed transcript and
+  summary: the question is embedded locally, compared against indexed chunks
+  by cosine similarity, and — only when something is actually relevant —
+  answered by Groq (local Ollama fallback), citing which file(s) it drew
+  from. Below the similarity threshold it says it found nothing rather than
+  risk inventing an answer.
 - **Always-Spanish summaries** regardless of the source language.
 - **Multi-recipient Telegram delivery** with Markdown formatting.
 - **Idempotent processing** — files are moved to a processed folder as soon as they
@@ -94,6 +106,8 @@ A separate long-polling bot (`bot.py`) answers `/status`, `/recap`,
 | [video.py](video.py)                                                                | Audio extraction; transcription via Groq `whisper-large-v3` with local `whisper.cpp` fallback |
 | [text.py](text.py)                                                                  | Reads plain-text / Markdown inputs                            |
 | [summary.py](summary.py)                                                            | Summary generation via Groq (Qwen chat) with local Ollama fallback |
+| [embeddings.py](embeddings.py)                                                      | Sentence-bounded chunking + local Ollama embeddings for `/ask` |
+| [rag.py](rag.py)                                                                    | `/ask` retrieval (cosine similarity) + Groq/local answer drafting |
 | [telegram_api.py](telegram_api.py)                                                  | Outbound Bot API helpers (`curl`-based)                       |
 | [utils.py](utils.py)                                                                | UTC, level-aware logging (rotation, per-run log files)         |
 | [install.sh](install.sh)                                                            | Virtualenv, runtime dirs, `.env`, cron entry                  |
@@ -120,7 +134,8 @@ A separate long-polling bot (`bot.py`) answers `/status`, `/recap`,
 - [`whisper.cpp`](https://github.com/ggerganov/whisper.cpp) built at `~/whisper.cpp/`
   with a model at `~/whisper.cpp/models/ggml-small.bin`
 - The [Ollama](https://ollama.com/) service installed and running, with the Qwen
-  model pulled (this is the native Ollama daemon/CLI, separate from the `ollama`
+  model and an embedding model (`nomic-embed-text` by default, for `/ask`)
+  pulled (this is the native Ollama daemon/CLI, separate from the `ollama`
   Python package the pipeline uses to talk to it)
 - A Telegram bot token and the target chat IDs — see
   [docs/telegram-bot-setup.md](docs/telegram-bot-setup.md)
@@ -147,12 +162,13 @@ The external tools (`rclone`, `whisper.cpp`, Ollama) are set up once by hand;
    sh ./models/download-ggml-model.sh small
    ```
 
-3. **Install Ollama and pull the Qwen model.** This is the native Ollama
-   service, not a Python package — no virtualenv involved:
+3. **Install Ollama and pull the Qwen and embedding models.** This is the
+   native Ollama service, not a Python package — no virtualenv involved:
 
    ```bash
    curl -fsSL https://ollama.com/install.sh | sh   # installs and starts the service
    ollama pull qwen3:1.7b
+   ollama pull nomic-embed-text   # for /ask (see EMBED_MODEL)
    ```
 
 4. **Create the Telegram bot** and note your chat id. Follow
@@ -184,9 +200,11 @@ The external tools (`rclone`, `whisper.cpp`, Ollama) are set up once by hand;
    | `QWEN_MODEL`       | Local Ollama model name used for summarization (e.g. `qwen3:1.7b`) |
    | `GROQ_API_KEY`     | Optional; blank disables Groq and runs fully local            |
 
-   `GROQ_MODEL`, `GROQ_WHISPER_MODEL`, and the Groq timeout/size-limit knobs have
-   code defaults and are not prompted for — set them in `.env` only to override,
-   see [.env.example](.env.example).
+   `GROQ_MODEL`, `GROQ_WHISPER_MODEL`, the Groq timeout/size-limit knobs, and the
+   `/ask` RAG settings (`EMBED_MODEL`, `RAG_MIN_SIMILARITY`, `RAG_CHUNK_CHARS`,
+   `RAG_CHUNK_OVERLAP_CHARS`, `RAG_TOP_K`) all have code defaults and are not
+   prompted for — set them in `.env` only to override, see
+   [.env.example](.env.example).
 
    > `install.sh` only touches the virtualenv, `~/whisper.cpp/`'s runtime
    > directories, and `.env`. The code stays in the checkout; re-run the script
@@ -239,6 +257,7 @@ rows to show, unrelated to any id.
 | `/pending`                   | Files currently in the Drive pending folder                                     |
 | `/stats`                     | Files / errors / runs / avg duration over the last 7 days                       |
 | `/find <text>`               | Search filenames and summaries — shows each result's `#id`                      |
+| `/ask <question>`            | Semantic search over indexed transcripts/summaries, answered by an LLM, with sources |
 | `/version` `/whoami` `/help` | Checkout SHA + model / your ids / command list                                  |
 | `/run [file]`                | Run now — whole pending folder, or one file; messages go only to you            |
 | `/runcron [file]`            | Same as `/run`, but broadcasts to every chat in `TG_CHAT_IDS`, like cron does   |
@@ -282,8 +301,9 @@ The suite in [tests/](tests/) stubs every external tool (rclone, ffmpeg, whisper
 Ollama, curl) and runs against a throwaway sandbox directory, so it needs no
 network, no Drive, and no models. It covers the message splitter, the extension
 filter, local-file cleanup on failure, the transcript guard, batch resilience,
-the run lock, the SQLite store (history / search / stats), `run` / `retry` /
-`resummarize` / cancel handling, and the bot's command handlers.
+the run lock, the SQLite store (history / search / stats / RAG chunks), `run` /
+`retry` / `resummarize` / cancel handling, `/ask`'s chunking/embedding/retrieval
+(`embeddings.py`, `rag.py`), and the bot's command handlers.
 
 ## How it works
 
@@ -306,8 +326,13 @@ Google Drive (pendings/) ─ rclone ─►  local download
         │                 local Ollama + Qwen ─► Spanish summary
         ▼                                  ▼
   SQLite store + run log        Telegram Bot API ─► chat(s), signed with engine
+        │                                  │
+        ▼                                  │
+  embeddings.py ─► SQLite chunks (Ollama embeddings, for /ask)
         ▲                                  │
         └─────────  bot reads  ◄───────────┘  /status /recap /transcript /logs …
+                                               /ask ─► rag.py: search chunks,
+                                               Groq/local ─► answer + sources
 ```
 
 ```mermaid
@@ -316,6 +341,7 @@ graph TD
     A -->|"/run /retry /resummarize"| B
     A -->|"/cancel"| B
     A -->|"/pause /resume"| B
+    A -->|"/ask pregunta"| B
 
     B -->|Valida y autoriza| C{Comando valido?}
     C -->|No| E[Responde error]
@@ -323,6 +349,7 @@ graph TD
     C -->|"/run /retry /resummarize"| F2["Spawnea Pipeline.py (PISCRIBE_MODE / PISCRIBE_ONLY)"]
     C -->|"/cancel"| P["SIGTERM al PID del lock"]
     C -->|"/pause /resume"| Q["Toggle piscribe.paused"]
+    C -->|"/ask"| R["Rag.py: embebe pregunta, busca en chunks"]
 
     F2 --> F[Pipeline.py]
     P -. detiene .-> F
@@ -331,11 +358,17 @@ graph TD
     F -->|Descarga archivo| H[Drive.py]
     F -->|Transcribe audio| I["Groq whisper-large-v3 / whisper.cpp local"]
     F -->|Genera resumen| J["Groq Qwen chat / Ollama local"]
+    F -->|Indexa para /ask| S["Embeddings.py: chunk + embed local (Ollama)"]
     F -->|Guarda resultados| G[Store.py]
 
     H -->|rclone| K[Google Drive]
     G -->|SQLite| L[(Base de datos)]
     D -->|SQLite| L
+    S -->|SQLite chunks| L
+    R -->|SQLite chunks| L
+    R -->|Sin contexto suficiente| E
+    R -->|Redacta respuesta| T["Groq chat / Ollama local"]
+    T -->|Respuesta + fuentes| A
 
     F -->|Envia resumen firmado| O[Telegram Bot API]
     O --> A
@@ -349,6 +382,7 @@ graph TD
     style L fill:#1a3a6b,stroke:#333,color:#fff
     style I fill:#b35c00,stroke:#333,color:#fff
     style J fill:#b35c00,stroke:#333,color:#fff
+    style T fill:#b35c00,stroke:#333,color:#fff
 ```
 
 ## Notes & limitations
@@ -364,6 +398,12 @@ graph TD
 - Each processed file records which engine transcribed and summarized it
   (`transcribe_backend`/`summarize_backend` in the SQLite store) and the
   Telegram message is signed with both, so you can see when a run fell back.
+- `/ask` indexing/retrieval is always local (Ollama `EMBED_MODEL`), regardless
+  of `GROQ_API_KEY` — Groq has no embeddings API. Only `/run`/`/runcron`/cron
+  and `/retry` re-index the transcript; `/resummarize` re-indexes just the
+  summary. Search is a brute-force cosine-similarity scan over every chunk
+  in SQLite (no vector index) — fine at the scale of a few meetings a day,
+  but it doesn't scale indefinitely.
 - A `flock` at `~/whisper.cpp/piscribe.lock` serializes runs; a pass that can't
   take it exits without working (it does not queue).
 - `touch ~/whisper.cpp/piscribe.paused` makes runs record as `skipped` without

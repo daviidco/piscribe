@@ -15,3 +15,12 @@ def test_build_app_enables_concurrent_updates():
     app = bot.build_app()
 
     assert app.concurrent_updates > 1
+
+
+def test_build_app_registers_the_ask_command():
+    """/ask (semantic search over indexed transcripts/summaries) is wired up
+    alongside the other query commands, not left out of the Application."""
+    app = bot.build_app()
+    commands = {cmd for handler in app.handlers[0] for cmd in getattr(handler, "commands", ())}
+
+    assert "ask" in commands

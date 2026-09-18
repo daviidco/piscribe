@@ -6,6 +6,7 @@ strings so SQLite ``datetime()`` math works on them directly.
 """
 
 import sqlite3
+from array import array
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
@@ -40,6 +41,16 @@ CREATE TABLE IF NOT EXISTS files (
 );
 CREATE INDEX IF NOT EXISTS idx_files_run ON files(run_id);
 CREATE INDEX IF NOT EXISTS idx_files_id ON files(id DESC);
+CREATE TABLE IF NOT EXISTS chunks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename    TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    text        TEXT NOT NULL,
+    embedding   BLOB NOT NULL,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_filename_kind ON chunks(filename, kind);
 """
 
 # Columns added after the initial release: CREATE TABLE above only applies to a
@@ -61,6 +72,18 @@ def _ensure_columns(conn, table, columns):
 
 def _utcnow():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _pack_embedding(vector):
+    """Encode a list[float] as the BLOB stored in chunks.embedding."""
+    return array("f", vector).tobytes()
+
+
+def _unpack_embedding(blob):
+    """Decode a chunks.embedding BLOB back into a list[float]."""
+    vector = array("f")
+    vector.frombytes(blob)
+    return list(vector)
 
 
 @contextmanager
@@ -115,6 +138,22 @@ def record_file(run_id, filename, kind, status, *, transcript_path=None,
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (run_id, filename, kind, transcript_path, summary, status, error,
              duration_ms, _utcnow(), transcribe_backend, summarize_backend),
+        )
+
+
+def replace_chunks(filename, kind, chunks):
+    """Replace every chunk of (filename, kind) with ``chunks`` (text, embedding) pairs.
+
+    Called on every (re)index so a /retry or /resummarize never leaves old
+    fragments glued to the new ones.
+    """
+    with _connect() as conn:
+        conn.execute("DELETE FROM chunks WHERE filename = ? AND kind = ?", (filename, kind))
+        conn.executemany(
+            "INSERT INTO chunks (filename, kind, chunk_index, text, embedding, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [(filename, kind, i, text, _pack_embedding(vec), _utcnow())
+             for i, (text, vec) in enumerate(chunks)],
         )
 
 
@@ -205,6 +244,13 @@ def search(term, limit=10):
             "ORDER BY id DESC LIMIT ?", (like, like, limit)
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def all_chunks():
+    """Every chunk row, embedding already decoded to a list[float] — for brute-force search."""
+    with _connect() as conn:
+        rows = conn.execute("SELECT * FROM chunks").fetchall()
+        return [{**dict(r), "embedding": _unpack_embedding(r["embedding"])} for r in rows]
 
 
 def stats():

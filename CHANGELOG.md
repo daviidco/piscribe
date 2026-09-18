@@ -11,6 +11,16 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
 
 ### Added
 
+- `/ask <pregunta>` answers questions about indexed meeting transcripts and
+  summaries: the question is embedded locally (Ollama `nomic-embed-text`,
+  `EMBED_MODEL`) and compared by cosine similarity against every indexed
+  chunk (`store.chunks`, populated by `embeddings.index_file` after every
+  successful `/run`/`/runcron`/cron/`/retry`/`/resummarize`); below
+  `RAG_MIN_SIMILARITY` it replies that it found nothing instead of risking a
+  hallucinated answer. When there's enough context, the answer itself is
+  drafted by Groq first and falls back to local Ollama on any failure — same
+  policy as `/recap`'s summaries — and is sent back with a "📎 Fuentes:"
+  footer listing which file(s) it drew from.
 - `/history` now lists the id(s) and filename(s) of the file(s) each run
   processed, e.g. `#44 2026-09-17 17:02:51 manual ok 1/1 · #12 reunion.mp4` —
   previously the only way to get a file's id for `/retry`/`/recap`/etc. was

@@ -203,6 +203,9 @@ def stub_pipeline(monkeypatch):
     monkeypatch.setattr(
         pipeline, "send_telegram_message", lambda text, chat_ids=None: sent.append(text)
     )
+    # Otherwise process_file/_resummarize would call the real embeddings.index_file,
+    # which reaches out to a local Ollama server no test environment has running.
+    monkeypatch.setattr(pipeline.embeddings, "index_file", lambda *a, **kw: None)
     return sent
 
 
@@ -438,6 +441,7 @@ def test_resummarize_file_uses_the_stored_transcript(monkeypatch):
     monkeypatch.setattr(
         pipeline, "send_telegram_message", lambda text, chat_ids=None: sent.append(text)
     )
+    monkeypatch.setattr(pipeline.embeddings, "index_file", lambda *a, **kw: None)
 
     result = pipeline.resummarize_file("nota.txt")
 
@@ -662,9 +666,107 @@ def test_resummarize_file_targets_only_the_requester(monkeypatch):
     store.finish_run(rid, "ok", 1, 1)
 
     monkeypatch.setattr(pipeline, "generate_summary", lambda text: ("re", "local · test"))
+    monkeypatch.setattr(pipeline.embeddings, "index_file", lambda *a, **kw: None)
     sent = _capture_sent(monkeypatch)
 
     pipeline.resummarize_file("nota.txt", requested_by="55")
 
     assert sent
     assert all(chat_ids == ["55"] for _text, chat_ids in sent)
+
+
+# ---------------------------------------------------------------------------
+# RAG indexing (embeddings.index_file) — called from process_file/_resummarize
+# so /ask always reflects the last content actually delivered.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.usefixtures("stub_pipeline")
+def test_process_file_indexes_transcript_and_summary_for_rag(work_dirs, monkeypatch):
+    """process_file indexes both the transcript text and the summary."""
+    note = work_dirs.LOCAL_DIR / "nota.txt"
+    note.write_text("acuerdos de la reunion", encoding="utf-8")
+    seen = {}
+    monkeypatch.setattr(
+        pipeline.embeddings, "index_file",
+        lambda filename, transcript=None, summary=None: seen.update(
+            filename=filename, transcript=transcript, summary=summary
+        ),
+    )
+
+    pipeline.process_file("nota.txt")
+
+    assert seen == {
+        "filename": "nota.txt",
+        "transcript": "acuerdos de la reunion",
+        "summary": "SUMMARY<<acuerdos de la reunion>>",
+    }
+
+
+def test_process_file_indexing_failure_does_not_break_delivery(
+    work_dirs, stub_pipeline, monkeypatch, read_log
+):
+    """A RAG indexing failure (e.g. Ollama down) is logged, not raised — the
+    summary was already generated and must still be delivered."""
+    note = work_dirs.LOCAL_DIR / "nota.txt"
+    note.write_text("contenido", encoding="utf-8")
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("ollama down")
+
+    monkeypatch.setattr(pipeline.embeddings, "index_file", boom)
+
+    result = pipeline.process_file("nota.txt")
+
+    assert result.status == "ok"
+    assert len(stub_pipeline) == 2  # summary + signature still sent
+    assert "indexing nota.txt for RAG failed" in read_log()
+
+
+@pytest.mark.usefixtures("work_dirs")
+def test_resummarize_indexes_only_the_summary_not_the_transcript(monkeypatch):
+    """_resummarize (via resummarize_file) re-indexes only the summary kind,
+    leaving the transcript's indexed chunks untouched (it didn't change)."""
+    transcript = pipeline.TRANSCRIPTIONS_DIR / "nota.txt"
+    transcript.write_text("texto original", encoding="utf-8")
+    rid = store.start_run("cron")
+    store.record_file(rid, "nota.txt", "text", "ok", transcript_path=str(transcript))
+    store.finish_run(rid, "ok", 1, 1)
+
+    monkeypatch.setattr(pipeline, "generate_summary", lambda text: ("re", "local · test"))
+    monkeypatch.setattr(pipeline, "send_telegram_message", lambda text, chat_ids=None: None)
+    seen = {}
+    monkeypatch.setattr(
+        pipeline.embeddings, "index_file",
+        lambda filename, transcript=None, summary=None: seen.update(
+            filename=filename, transcript=transcript, summary=summary
+        ),
+    )
+
+    pipeline.resummarize_file("nota.txt")
+
+    assert seen == {"filename": "nota.txt", "transcript": None, "summary": "re"}
+
+
+@pytest.mark.usefixtures("work_dirs")
+def test_resummarize_indexing_failure_does_not_break_delivery(monkeypatch, read_log):
+    """Same resilience as process_file: an indexing failure during /resummarize
+    doesn't stop the (re)summary from being delivered."""
+    transcript = pipeline.TRANSCRIPTIONS_DIR / "nota.txt"
+    transcript.write_text("texto original", encoding="utf-8")
+    rid = store.start_run("cron")
+    store.record_file(rid, "nota.txt", "text", "ok", transcript_path=str(transcript))
+    store.finish_run(rid, "ok", 1, 1)
+
+    monkeypatch.setattr(pipeline, "generate_summary", lambda text: ("re", "local · test"))
+    sent = _capture_sent(monkeypatch)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("ollama down")
+
+    monkeypatch.setattr(pipeline.embeddings, "index_file", boom)
+
+    result = pipeline.resummarize_file("nota.txt")
+
+    assert result.status == "ok"
+    assert len(sent) == 2
+    assert "indexing nota.txt for RAG failed" in read_log()
