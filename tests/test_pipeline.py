@@ -210,17 +210,20 @@ def stub_pipeline(monkeypatch):
 
 
 def test_process_file_text_note(work_dirs, stub_pipeline):
-    """A .txt note is summarised and archived; the summary and its engine
-    signature are sent as two separate messages, local copy removed."""
+    """A .txt note is summarised and archived; the summary, its engine
+    signature, and the /ask indexing outcome are sent as three separate
+    messages (summary/signature first, so indexing never delays them), local
+    copy removed."""
     note = work_dirs.LOCAL_DIR / "nota.txt"
     note.write_text("acuerdos de la reunion", encoding="utf-8")
 
     result = pipeline.process_file("nota.txt")
 
-    assert len(stub_pipeline) == 2
+    assert len(stub_pipeline) == 3
     assert "nota.txt" in stub_pipeline[0]
     assert "SUMMARY<<acuerdos de la reunion>>" in stub_pipeline[0]
     assert "_resumen:" not in stub_pipeline[0]  # signature is its own message
+    assert "embedding" in stub_pipeline[2] and "nota.txt" in stub_pipeline[2]
     assert "_resumen: local · Ollama test-qwen_" in stub_pipeline[1]
     assert "_transcripción:" not in stub_pipeline[1]  # no transcription stage for text input
     assert not note.exists()  # local copy cleaned up
@@ -446,10 +449,11 @@ def test_resummarize_file_uses_the_stored_transcript(monkeypatch):
     result = pipeline.resummarize_file("nota.txt")
 
     assert result.status == "ok"
-    assert len(sent) == 2
+    assert len(sent) == 3
     assert "RE<<texto original de la reunion>>" in sent[0]
     assert "_resumen:" not in sent[0]  # signature is its own message
     assert "_resumen: local · Ollama test-qwen_" in sent[1]
+    assert "embedding" in sent[2] and "nota.txt" in sent[2]
     assert store.latest_file()["summary"] == "RE<<texto original de la reunion>>"
     assert store.latest_file()["summarize_backend"] == "local · Ollama test-qwen"
 
@@ -573,7 +577,7 @@ def test_process_file_notify_stages_reports_each_stage_with_position(
 
     pipeline.process_file("nota.txt", notify_stages=True, position=(2, 3))
 
-    stages = stub_pipeline[:-2]  # last two entries are the summary and its signature
+    stages = stub_pipeline[:-3]  # last three entries: summary, signature, embedding outcome
     assert any("descargando" in m and "(2/3)" in m for m in stages)
     assert any("generando resumen" in m and "(2/3)" in m for m in stages)
     assert not any("transcribiendo" in m for m in stages)  # text file, no transcription stage
@@ -718,7 +722,8 @@ def test_process_file_indexing_failure_does_not_break_delivery(
     result = pipeline.process_file("nota.txt")
 
     assert result.status == "ok"
-    assert len(stub_pipeline) == 2  # summary + signature still sent
+    assert len(stub_pipeline) == 3  # summary + signature still sent, plus the failure notice
+    assert "falló" in stub_pipeline[2] and "nota.txt" in stub_pipeline[2]
     assert "indexing nota.txt for RAG failed" in read_log()
 
 
@@ -768,5 +773,6 @@ def test_resummarize_indexing_failure_does_not_break_delivery(monkeypatch, read_
     result = pipeline.resummarize_file("nota.txt")
 
     assert result.status == "ok"
-    assert len(sent) == 2
+    assert len(sent) == 3
+    assert "falló" in sent[2][0] and "nota.txt" in sent[2][0]
     assert "indexing nota.txt for RAG failed" in read_log()

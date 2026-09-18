@@ -176,13 +176,19 @@ def _record(run_id, file_result):
 
 
 def _index_for_rag(filename, **kwargs):
-    """Best-effort call to embeddings.index_file — never lets an indexing
-    failure (e.g. Ollama down) block delivery of a summary already generated.
+    """Best-effort call to embeddings.index_file; returns the Telegram
+    message reporting the outcome.
+
+    Callers send this AFTER the summary/signature messages, never before —
+    an indexing failure (e.g. Ollama down) must not delay or block delivery
+    of a summary already generated.
     """
     try:
         embeddings.index_file(filename, **kwargs)
     except Exception as e:  # noqa: BLE001  pylint: disable=broad-exception-caught
         log_warning(f"indexing {filename} for RAG failed ({e}); continuing without it.")
+        return f"⚠️ embedding para /ask: falló ({filename}) — {redact(str(e))}"
+    return f"📎 embedding para /ask: listo ({filename})"
 
 
 def process_file(
@@ -236,10 +242,12 @@ def process_file(
 
         stage(f"🧠 generando resumen de {filename}…")
         summary, summarize_backend = generate_summary(text)
-        _index_for_rag(filename, transcript=text, summary=summary)
         send_telegram_message(_summary_message(filename, summary), chat_ids=chat_ids)
         send_telegram_message(
             _signature_message(transcribe_backend, summarize_backend), chat_ids=chat_ids
+        )
+        send_telegram_message(
+            _index_for_rag(filename, transcript=text, summary=summary), chat_ids=chat_ids
         )
     finally:
         local_path.unlink(missing_ok=True)
@@ -269,7 +277,6 @@ def _resummarize(filename, chat_ids=None):
 
     text = path.read_text(encoding="utf-8")
     summary, summarize_backend = generate_summary(text)
-    _index_for_rag(filename, summary=summary)
     transcribe_backend = row.get("transcribe_backend")
     send_telegram_message(
         _summary_message(filename, summary, label="Resumen (re)"), chat_ids=chat_ids
@@ -277,6 +284,7 @@ def _resummarize(filename, chat_ids=None):
     send_telegram_message(
         _signature_message(transcribe_backend, summarize_backend), chat_ids=chat_ids
     )
+    send_telegram_message(_index_for_rag(filename, summary=summary), chat_ids=chat_ids)
     log(f"Done: {filename}")
     return FileResult(
         filename=filename, kind=row["kind"], status="ok", transcript_path=str(path),
