@@ -109,16 +109,21 @@ def answer_question(question):
 
     Returns a ``(answer, sources, backend)`` tuple. ``sources`` is a sorted
     list of ``(filename, created_at)`` pairs the answer draws from — empty
-    when nothing was relevant enough. ``backend`` is ``None`` when the best
-    match didn't cross ``RAG_MIN_SIMILARITY``: no LLM is called at all in
-    that case, avoiding both the cost and the risk of an invented answer.
+    when nothing was relevant enough. ``backend`` is ``None`` when nothing
+    crossed ``RAG_MIN_SIMILARITY``: no LLM is called at all in that case,
+    avoiding both the cost and the risk of an invented answer.
     """
     response = ollama.embed(model=EMBED_MODEL, input=question)
     # pylint mis-infers ollama.embed's return type, same as ollama.generate in
     # summary.py; the .embeddings access is fine.
     question_embedding = response.embeddings[0]  # pylint: disable=no-member
-    matches = _search(list(question_embedding))
-    if not matches or matches[0][1] < RAG_MIN_SIMILARITY:
+    # _search ranks the top RAG_TOP_K chunks regardless of how weak the
+    # match is — with few sources indexed, an unrelated chunk can easily
+    # rank in the top K. Each one must clear RAG_MIN_SIMILARITY on its own to
+    # reach the prompt/sources; checking only the best match let a barely-
+    # related filler chunk ride along and get cited as if it were relevant.
+    matches = [m for m in _search(list(question_embedding)) if m[1] >= RAG_MIN_SIMILARITY]
+    if not matches:
         return NO_CONTEXT_ANSWER, [], None
 
     prompt = _build_prompt(question, matches)

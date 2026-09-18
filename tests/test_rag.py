@@ -102,6 +102,39 @@ def test_answer_question_below_threshold_returns_canned_answer_without_any_llm(m
     assert backend is None
 
 
+def test_answer_question_excludes_individual_matches_below_the_threshold(monkeypatch):
+    """A weak match must not ride along into the prompt/sources just because
+    _search's top-K still returned it — even when the BEST match clears
+    RAG_MIN_SIMILARITY, every other cited source has to clear it too, or it
+    gets cited as 'relevant' despite being unrelated to the question."""
+    monkeypatch.setattr(rag, "GROQ_API_KEY", "")
+    monkeypatch.setattr(rag, "RAG_TOP_K", 5)
+    monkeypatch.setattr(rag.ollama, "embed", _fake_embed([1.0, 0.0]))
+    monkeypatch.setattr(
+        rag.store, "all_chunks",
+        lambda: [
+            _chunk(
+                "nota-x.txt", "presupuesto de acme, primera cuota vence el 30/09",
+                [1.0, 0.0],
+            ),
+            _chunk("reunion.mkv", "contenido no relacionado", [0.0, 1.0]),  # similarity 0.0
+        ],
+    )
+    seen = {}
+
+    def fake_answer_local(prompt):
+        seen["prompt"] = prompt
+        return "la cuota vence el 30/09"
+
+    monkeypatch.setattr(rag, "_answer_local", fake_answer_local)
+
+    _answer, sources, _backend = rag.answer_question("cuando vence la cuota de acme?")
+
+    assert sources == [("nota-x.txt", "2026-01-01 00:00:00")]
+    assert "reunion.mkv" not in seen["prompt"]
+    assert "contenido no relacionado" not in seen["prompt"]
+
+
 def test_answer_question_uses_groq_when_available(monkeypatch):
     """Groq succeeds: its text is used directly, with sources from the
     matched chunks, and local Ollama never runs."""

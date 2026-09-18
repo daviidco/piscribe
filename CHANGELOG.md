@@ -24,9 +24,13 @@ The current version lives in [`VERSION`](VERSION) and is shown by the bot's
   summaries: the question is embedded locally (Ollama `nomic-embed-text`,
   `EMBED_MODEL`) and compared by cosine similarity against every indexed
   chunk (`store.chunks`, populated by `embeddings.index_file` after every
-  successful `/run`/`/runcron`/cron/`/retry`/`/resummarize`); below
-  `RAG_MIN_SIMILARITY` it replies that it found nothing instead of risking a
-  hallucinated answer. When there's enough context, the answer itself is
+  successful `/run`/`/runcron`/cron/`/retry`/`/resummarize`). Each retrieved
+  chunk has to individually clear `RAG_MIN_SIMILARITY` to reach the prompt or
+  the sources footer — not just the single best match — so an unrelated file
+  can't ride along into the answer just because it happened to rank in the
+  top `RAG_TOP_K` among a small index; if nothing clears the bar it replies
+  that it found nothing instead of risking a hallucinated (or wrongly
+  sourced) answer. When there's enough context, the answer itself is
   drafted by Groq first and falls back to local Ollama on any failure — same
   policy as `/recap`'s summaries — and is sent back with a "📎 Fuentes:"
   footer listing which file(s)/note(s) it drew from and when each was
